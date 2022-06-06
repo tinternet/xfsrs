@@ -1,0 +1,10 @@
+[workspace]
+
+members = [
+    "xfslib",
+    "xfs_conf",
+    "xfs_mgr",
+    "xfs_mgr_proxy",
+    "xfs_dev_mgr"
+]
+
