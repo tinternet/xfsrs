@@ -1,0 +1,17 @@
+[package]
+name = "msxfs_proxy"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+xfslib = { path = "../xfslib" }
+winapi = { version = "0.3", features = ["everything"] }
+libloading = "0.7"
+log = "0.4"
+log4rs = "1.1"
+lazy_static = "1.4.0"
+
+[lib]
+crate-type=["cdylib"]
