@@ -1,10 +1,35 @@
 use winapi::{
-    shared::{minwindef::DWORD, windef::HWND, winerror::HRESULT},
+    shared::{
+        minwindef::{DWORD, LPVOID},
+        windef::HWND,
+        winerror::HRESULT,
+    },
     um::winnt::LPSTR,
 };
 use xfslib::{HAPP, HPROVIDER, HSERVICE, LPWFSVERSION, REQUESTID};
 
-pub type WfpOpen = unsafe extern "stdcall" fn(
+pub type WfpCancelAsyncRequest = extern "stdcall" fn(hService: HSERVICE, RequestId: REQUESTID) -> HRESULT;
+
+pub type WfpClose = extern "stdcall" fn(hService: HSERVICE, hWnd: HWND, ReqID: REQUESTID) -> HRESULT;
+
+pub type WFPDeregister = extern "stdcall" fn(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, ReqID: REQUESTID) -> HRESULT;
+
+pub type WFPExecute = extern "stdcall" fn(hService: HSERVICE, dwCommand: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, hWnd: HWND, ReqID: REQUESTID) -> HRESULT;
+
+pub type WFPGetInfo = extern "stdcall" fn(hService: HSERVICE, dwCategory: DWORD, lpQueryDetails: LPVOID, dwTimeOut: DWORD, hWnd: HWND, ReqID: REQUESTID) -> HRESULT;
+
+pub type WFPLock = extern "stdcall" fn(hService: HSERVICE, dwTimeOut: DWORD, hWnd: HWND, ReqID: REQUESTID) -> HRESULT;
+
+pub type WFPRegister = extern "stdcall" fn(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, ReqID: REQUESTID) -> HRESULT;
+
+pub type WFPSetTraceLevel = extern "stdcall" fn(hService: HSERVICE, dwTraceLevel: DWORD) -> HRESULT;
+
+#[allow(dead_code)]
+pub type WFPUnloadService = extern "stdcall" fn() -> HRESULT;
+
+pub type WFPUnlock = extern "stdcall" fn(hService: HSERVICE, hWnd: HWND, ReqID: REQUESTID) -> HRESULT;
+
+pub type WfpOpen = extern "stdcall" fn(
     hService: HSERVICE,
     lpszLogicalName: LPSTR,
     hApp: HAPP,
