@@ -342,7 +342,7 @@ pub extern "stdcall" fn WFSOpen(
 ) -> HRESULT {
     trace!("WFSOpen");
     assert_started!();
-    call_async(WFS_OPEN_COMPLETE, |hwnd, request_id| {
+    let result = call_async(WFS_OPEN_COMPLETE, |hwnd, request_id| {
         WFSAsyncOpen(
             lpszLogicalName,
             hApp,
@@ -356,7 +356,9 @@ pub extern "stdcall" fn WFSOpen(
             lpSPIVersion,
             request_id,
         )
-    })
+    });
+    trace!("WFSOpen result: {:?}", result);
+    result
 }
 
 #[allow(non_snake_case)]
@@ -413,6 +415,7 @@ pub extern "stdcall" fn WFSAsyncOpen(
 
         let lpszLogicalName = xfs_unwrap!(CStr::from_ptr(lpszLogicalName).to_str());
         let path = xfs_unwrap!(CString::new(format!("LOGICAL_SERVICES\\{}", lpszLogicalName)));
+        trace!("WFSOpen: path: {:?}", path);
 
         if (XFS_CONFIG.WFMOpenKey)(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut lgl_key) != WFS_SUCCESS {
             return WFS_ERR_INVALID_SERVPROV;
@@ -457,6 +460,7 @@ pub extern "stdcall" fn WFSAsyncOpen(
     let phy_prov_path = &phy_prov_path[..*phy_prov_len as usize];
     let phy_prov_path = xfs_unwrap!(xfs_unwrap!(CStr::from_bytes_with_nul(phy_prov_path)).to_str());
 
+    trace!("WFSOpen: phy_prov_path: {:?}", phy_prov_path);
     let library = unsafe { xfs_unwrap!(libloading::Library::new(phy_prov_path)) };
 
     let mut services = xfs_unwrap!(SERVICES.lock());
@@ -480,6 +484,7 @@ pub extern "stdcall" fn WFSAsyncOpen(
     unsafe {
         let wfp_open = xfs_unwrap!(service.library.get::<spi::WfpOpen>(b"WFPOpen"));
 
+        trace!("WFSOpen: calling spi::WfpOpen");
         wfp_open(
             *lphService,
             lpszLogicalName,
@@ -820,9 +825,9 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
 
 fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT) -> HRESULT {
     let window = window::SyncWindow::new(message);
-    let request_id = ptr::null_mut();
+    let mut request_id = 0;
 
-    let result = async_fn(window.handle(), request_id);
+    let result = async_fn(window.handle(), &mut request_id);
 
     if result != WFS_SUCCESS {
         return result;
@@ -836,9 +841,9 @@ fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT) -> 
 
 fn call_async_result(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp_result: &mut LPWFSRESULT) -> HRESULT {
     let window = window::SyncWindow::new(message);
-    let request_id = ptr::null_mut();
+    let mut request_id = 0;
 
-    let result = async_fn(window.handle(), request_id);
+    let result = async_fn(window.handle(), &mut request_id);
 
     if result != WFS_SUCCESS {
         return result;

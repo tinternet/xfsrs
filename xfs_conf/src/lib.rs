@@ -203,7 +203,6 @@ pub unsafe extern "stdcall" fn WFMOpenKey(hKey: HKEY, lpszSubKey: LPSTR, phkResu
     };
 
     let sub_key = format!("{}{}", sub_key, xfs_unwrap!(CStr::from_ptr(lpszSubKey).to_str()));
-    eprintln!("OPEN KEY: {}", sub_key);
     let sub_key_cstring = xfs_unwrap!(CString::new(sub_key));
 
     match RegOpenKeyA(h_key, sub_key_cstring.as_ptr(), phkResult) as DWORD {
