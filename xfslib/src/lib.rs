@@ -38,20 +38,20 @@ pub struct WFSVERSION {
 
 #[repr(C)]
 #[allow(non_snake_case)]
-union U {
-    dwCommandCode: DWORD,
-    dwEventID: DWORD,
+pub union U {
+    pub dwCommandCode: DWORD,
+    pub dwEventID: DWORD,
 }
 
 #[repr(C)]
 #[allow(non_snake_case)]
 pub struct WFSRESULT {
-    RequestID: ULONG,
-    hService: HSERVICE,
-    tsTimestamp: SYSTEMTIME,
-    hResult: HRESULT,
-    u: U,
-    lpBuffer: LPVOID,
+    pub RequestID: ULONG,
+    pub hService: HSERVICE,
+    pub tsTimestamp: SYSTEMTIME,
+    pub hResult: HRESULT,
+    pub u: U,
+    pub lpBuffer: LPVOID,
 }
 
 impl fmt::Debug for WFSRESULT {

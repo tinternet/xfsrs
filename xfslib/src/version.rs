@@ -17,6 +17,10 @@ impl Version {
     pub fn new_explicit(major: BYTE, minor: BYTE) -> Self {
         Self { major, minor }
     }
+
+    pub fn value(&self) -> WORD {
+        ((self.minor as WORD) << 8) | self.major as WORD
+    }
 }
 
 #[derive(Debug)]
@@ -31,5 +35,13 @@ impl VersionRange {
             start: Version::new((dw_version >> 16) as WORD),
             end: Version::new((dw_version & 0xffff) as WORD),
         }
+    }
+
+    pub fn new_explicit(start: Version, end: Version) -> Self {
+        Self { start, end }
+    }
+
+    pub fn value(&self) -> DWORD {
+        ((self.start.value() as DWORD) << 16) | self.end.value() as DWORD
     }
 }
