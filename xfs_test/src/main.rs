@@ -47,8 +47,8 @@ struct XFSApi<'a> {
     WFSUnhookBlockingHook: Symbol<'a, unsafe extern "stdcall" fn() -> HRESULT>,
     WFSUnlock: Symbol<'a, unsafe extern "stdcall" fn(HSERVICE) -> HRESULT>,
     WFSAsyncUnlock: Symbol<'a, unsafe extern "stdcall" fn(HSERVICE, HWND, LPREQUESTID) -> HRESULT>,
-    WFMAllocateBuffer: Symbol<'a, unsafe extern "stdcall" fn(ULONG, ULONG, LPVOID) -> HRESULT>,
-    WFMAllocateMore: Symbol<'a, unsafe extern "stdcall" fn(ULONG, LPVOID, LPVOID) -> HRESULT>,
+    WFMAllocateBuffer: Symbol<'a, unsafe extern "stdcall" fn(ULONG, ULONG, *mut LPVOID) -> HRESULT>,
+    WFMAllocateMore: Symbol<'a, unsafe extern "stdcall" fn(ULONG, LPVOID, *mut LPVOID) -> HRESULT>,
     WFMFreeBuffer: Symbol<'a, unsafe extern "stdcall" fn(LPVOID) -> HRESULT>,
     WFMGetTraceLevel: Symbol<'a, unsafe extern "stdcall" fn(HSERVICE, LPDWORD) -> HRESULT>,
     WFMKillTimer: Symbol<'a, unsafe extern "stdcall" fn(WORD) -> HRESULT>,
@@ -71,8 +71,29 @@ fn init_log() {
 fn main() {
     init_log();
     unsafe {
-        test();
+        test_buffers();
     }
+}
+
+unsafe fn test_buffers() {
+    let lib = libloading::Library::new("msxfs.dll").unwrap();
+    let allocate = lib.get::<unsafe extern "stdcall" fn(ULONG, ULONG, *mut LPVOID) -> HRESULT>(b"WFMAllocateBuffer").unwrap();
+    let allocate_more = lib.get::<unsafe extern "stdcall" fn(ULONG, LPVOID, *mut LPVOID) -> HRESULT>(b"WFMAllocateMore").unwrap();
+    let free_buffer = lib.get::<unsafe extern "stdcall" fn(LPVOID) -> HRESULT>(b"WFMFreeBuffer").unwrap();
+
+    let mut buffer: LPVOID = ptr::null_mut();
+    let result = allocate(100, 0, &mut buffer);
+
+    println!("{:?} {:?}", result, buffer);
+
+    let mut more_buffer: LPVOID = ptr::null_mut();
+    let result = allocate_more(100, buffer, &mut more_buffer);
+
+    println!("{:?} {:?}", result, more_buffer);
+
+    let result = free_buffer(buffer);
+
+    println!("{:?}", result);
 }
 
 #[allow(non_snake_case)]

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ffi::{c_void, CStr, CString},
     ptr,
     sync::{
@@ -7,9 +8,7 @@ use std::{
     },
 };
 
-use conf::XFS_CONFIG;
 use lazy_static::lazy_static;
-// use libloading::Symbol;
 use log::{trace, LevelFilter};
 use log4rs::{
     append::file::FileAppender,
@@ -18,7 +17,7 @@ use log4rs::{
 };
 use winapi::{
     shared::{
-        basetsd::UINT_PTR,
+        basetsd::{UINT_PTR, ULONG_PTR},
         minwindef::{DWORD, HINSTANCE, HKEY, LPARAM, LPDWORD, LPVOID, LPWORD, MAX_PATH, UINT, ULONG, WORD},
         windef::HWND,
         winerror::HRESULT,
@@ -29,9 +28,10 @@ use winapi::{
         winuser::{KillTimer, PostMessageA, SetTimer},
     },
 };
+
+use conf::*;
 use xfslib::*;
 
-mod buffer;
 mod conf;
 mod spi;
 mod window;
@@ -40,7 +40,8 @@ lazy_static! {
     static ref SERVICES: Mutex<Vec<Option<Service>>> = Mutex::new((0..8192).map(|_| None).collect());
     static ref HANDLES: Mutex<[bool; 8192]> = Mutex::new([false; 8192]);
     static ref STARTED: AtomicBool = AtomicBool::new(false);
-    static ref TIMERS: Mutex<Vec<Option<TimerCtx>>> = Mutex::new((0..65535).map(|_| None).collect());
+    static ref TIMERS: Mutex<Vec<Option<Timer>>> = Mutex::new((0..65535).map(|_| None).collect());
+    pub static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Vec<ULONG_PTR>>> = Mutex::new(HashMap::new());
 }
 
 macro_rules! xfs_unwrap {
@@ -84,13 +85,10 @@ struct Service {
     trace_level: DWORD,
 }
 
-#[allow(non_snake_case)]
-struct TimerCtx {
-    hWnd: HWND,
-    lpContext: LPVOID,
+struct Timer {
+    hwnd: ULONG_PTR,
+    lpcontext: ULONG_PTR,
 }
-
-unsafe impl Send for TimerCtx {}
 
 #[allow(non_snake_case)]
 #[no_mangle]
@@ -171,6 +169,7 @@ pub extern "stdcall" fn WFSCreateAppHandle(lphApp: &mut HAPP) -> HRESULT {
     assert_started!();
 
     let mut handles = xfs_unwrap!(HANDLES.lock());
+
     let index = match handles.iter().position(|h| !h) {
         Some(index) => index,
         None => return WFS_ERR_INTERNAL_ERROR,
@@ -219,11 +218,13 @@ pub extern "stdcall" fn WFSAsyncDeregister(hService: HSERVICE, dwEventClass: DWO
 #[allow(non_snake_case)]
 #[no_mangle]
 pub extern "stdcall" fn WFSDestroyAppHandle(hApp: HAPP) -> HRESULT {
+    trace!("WFSDestroyAppHandle");
+    assert_started!();
+
     if hApp.is_null() {
         return WFS_ERR_INVALID_APP_HANDLE;
     }
 
-    assert_started!();
     let mut handles = xfs_unwrap!(HANDLES.lock());
     let index = hApp as usize - 1;
     handles[index] = false;
@@ -342,6 +343,7 @@ pub extern "stdcall" fn WFSOpen(
 ) -> HRESULT {
     trace!("WFSOpen");
     assert_started!();
+
     let result = call_async(WFS_OPEN_COMPLETE, |hwnd, request_id| {
         WFSAsyncOpen(
             lpszLogicalName,
@@ -357,6 +359,7 @@ pub extern "stdcall" fn WFSOpen(
             request_id,
         )
     });
+
     trace!("WFSOpen result: {:?}", result);
     result
 }
@@ -417,18 +420,18 @@ pub extern "stdcall" fn WFSAsyncOpen(
         let path = xfs_unwrap!(CString::new(format!("LOGICAL_SERVICES\\{}", lpszLogicalName)));
         trace!("WFSOpen: path: {:?}", path);
 
-        if (XFS_CONFIG.WFMOpenKey)(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut lgl_key) != WFS_SUCCESS {
+        if WFM_OPEN_KEY(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut lgl_key) != WFS_SUCCESS {
             return WFS_ERR_INVALID_SERVPROV;
         }
 
         let name = xfs_unwrap!(CString::new("provider"));
 
-        if (XFS_CONFIG.WFMQueryValue)(lgl_key, name.as_ptr() as *mut i8, lgl_prov_path.as_mut_ptr() as *mut i8, lgl_prov_len) != WFS_SUCCESS {
-            (XFS_CONFIG.WFMCloseKey)(lgl_key);
+        if WFM_QUERY_VALUE(lgl_key, name.as_ptr() as *mut i8, lgl_prov_path.as_mut_ptr() as *mut i8, lgl_prov_len) != WFS_SUCCESS {
+            WFM_CLOSE_KEY(lgl_key);
             return WFS_ERR_INVALID_SERVPROV;
         }
 
-        (XFS_CONFIG.WFMCloseKey)(lgl_key);
+        WFM_CLOSE_KEY(lgl_key);
     }
 
     let mut phy_prov_path: [u8; MAX_PATH] = [0; MAX_PATH]; // Change size as needed.
@@ -443,18 +446,18 @@ pub extern "stdcall" fn WFSAsyncOpen(
 
         trace!("OPENING {}", path.to_str().unwrap());
 
-        if (XFS_CONFIG.WFMOpenKey)(WFS_CFG_HKEY_MACHINE_XFS_ROOT, path.as_ptr() as *mut i8, &mut phy_key) != WFS_SUCCESS {
+        if WFM_OPEN_KEY(WFS_CFG_HKEY_MACHINE_XFS_ROOT, path.as_ptr() as *mut i8, &mut phy_key) != WFS_SUCCESS {
             return WFS_ERR_INVALID_SERVPROV;
         }
 
         let name = xfs_unwrap!(CString::new("dllname"));
 
-        if (XFS_CONFIG.WFMQueryValue)(phy_key, name.as_ptr() as *mut i8, phy_prov_path.as_mut_ptr() as *mut i8, phy_prov_len) != WFS_SUCCESS {
-            (XFS_CONFIG.WFMCloseKey)(phy_key);
+        if WFM_QUERY_VALUE(phy_key, name.as_ptr() as *mut i8, phy_prov_path.as_mut_ptr() as *mut i8, phy_prov_len) != WFS_SUCCESS {
+            WFM_CLOSE_KEY(phy_key);
             return WFS_ERR_INVALID_SERVPROV;
         }
 
-        (XFS_CONFIG.WFMCloseKey)(phy_key);
+        WFM_CLOSE_KEY(phy_key);
     }
 
     let phy_prov_path = &phy_prov_path[..*phy_prov_len as usize];
@@ -465,6 +468,7 @@ pub extern "stdcall" fn WFSAsyncOpen(
 
     let mut services = xfs_unwrap!(SERVICES.lock());
     let request_id = 1;
+
     services[service_index] = Some(Service {
         library,
         request_id,
@@ -518,6 +522,7 @@ pub extern "stdcall" fn WFSRegister(hService: HSERVICE, dwEventClass: DWORD, hWn
 pub extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     trace!("WFSAsyncRegister");
     assert_started!();
+
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = get_service_req!(hService, services);
 
@@ -545,15 +550,12 @@ pub extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWF
     if range.start > range.end {
         return WFS_ERR_INTERNAL_ERROR;
     }
-
     if range.start > Version::new_explicit(3, 30) {
         return WFS_ERR_API_VER_TOO_HIGH;
     }
-
     if range.end < Version::new_explicit(2, 00) {
         return WFS_ERR_API_VER_TOO_LOW;
     }
-
     if lpWFSVersion.is_null() {
         return WFS_ERR_INVALID_POINTER;
     }
@@ -603,6 +605,7 @@ pub extern "stdcall" fn WFSUnlock(hService: HSERVICE) -> HRESULT {
 pub extern "stdcall" fn WFSAsyncUnlock(hService: HSERVICE, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     trace!("WFSAsyncUnlock");
     assert_started!();
+
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = get_service_req!(hService, services);
 
@@ -621,6 +624,8 @@ pub extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvDat
         return WFS_ERR_INVALID_POINTER;
     }
 
+    let mut buffers = xfs_unwrap!(BUFFERS.lock());
+
     unsafe {
         *lppvData = HeapAlloc(GetProcessHeap(), ulFlags, ulSize as usize);
     }
@@ -630,7 +635,7 @@ pub extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvDat
     }
 
     unsafe {
-        buffer::ALLOC_MAP.lock().unwrap().insert(buffer::Data::new(*lppvData), buffer::List::new());
+        buffers.insert(*lppvData as ULONG_PTR, Vec::new());
     }
 
     WFS_SUCCESS
@@ -643,11 +648,11 @@ pub extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppv
         return WFS_ERR_INVALID_POINTER;
     }
 
-    let mut locked = buffer::ALLOC_MAP.lock().unwrap();
-
-    if !locked.contains_key(&buffer::Data::new(lpvOriginal)) {
-        return WFS_ERR_INVALID_POINTER;
-    }
+    let mut buffers = xfs_unwrap!(BUFFERS.lock());
+    let list = match buffers.get_mut(&(lpvOriginal as ULONG_PTR)) {
+        Some(list) => list,
+        None => return WFS_ERR_INVALID_BUFFER,
+    };
 
     unsafe {
         *lppvData = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ulSize as usize);
@@ -657,10 +662,8 @@ pub extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppv
         return WFS_ERR_OUT_OF_MEMORY;
     }
 
-    let list = locked.get_mut(&buffer::Data::new(lpvOriginal)).unwrap();
-
     unsafe {
-        list.push_back(*lppvData);
+        list.push(*lppvData as ULONG_PTR);
     }
 
     WFS_SUCCESS
@@ -673,21 +676,19 @@ pub extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
         return WFS_ERR_INVALID_POINTER;
     }
 
-    let mut locked = buffer::ALLOC_MAP.lock().unwrap();
+    let mut buffers = xfs_unwrap!(BUFFERS.lock());
+    let list = match buffers.get_mut(&(lpvData as ULONG_PTR)) {
+        Some(list) => list,
+        None => return WFS_ERR_INVALID_BUFFER,
+    };
 
-    if !locked.contains_key(&buffer::Data::new(lpvData)) {
-        return WFS_ERR_INVALID_BUFFER;
-    }
-
-    let list = locked.get(&buffer::Data::new(lpvData)).unwrap();
-
-    for ptr in list.iter() {
+    for &ptr in list.iter() {
         unsafe {
-            HeapFree(GetProcessHeap(), 0, *ptr);
+            HeapFree(GetProcessHeap(), 0, ptr as *mut c_void);
         }
     }
 
-    locked.remove(&buffer::Data::new(lpvData));
+    buffers.remove(&(lpvData as ULONG_PTR));
 
     unsafe {
         HeapFree(GetProcessHeap(), 0, lpvData);
@@ -719,19 +720,17 @@ pub extern "stdcall" fn WFMGetTraceLevel(hService: HSERVICE, lpdwTraceLevel: LPD
 pub extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
     let mut timers = xfs_unwrap!(TIMERS.lock());
 
-    if timers[wTimerID as usize].is_none() {
+    if timers.get(wTimerID as usize - 1).is_none() {
         return WFS_ERR_INVALID_TIMER;
     }
 
     unsafe {
-        if KillTimer(std::ptr::null::<HWND>() as HWND, wTimerID as UINT_PTR) == 0 {
+        if KillTimer(std::ptr::null_mut(), wTimerID as UINT_PTR) == 0 {
             return WFS_ERR_INTERNAL_ERROR;
         }
     }
 
-    // TODO: Free pointer?
-    timers[wTimerID as usize] = None;
-
+    timers.insert(wTimerID as usize - 1, None);
     WFS_SUCCESS
 }
 
@@ -753,35 +752,40 @@ pub extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTimeVal: DW
     if hWnd.is_null() {
         return WFS_ERR_INVALID_HWND;
     }
-
     if lpwTimerID.is_null() {
         return WFS_ERR_INVALID_POINTER;
     }
-
     if dwTimeVal == 0 {
         return WFS_ERR_INVALID_DATA;
     }
 
     let mut timers = xfs_unwrap!(TIMERS.lock());
-    let timer_id = timers.iter().position(|t| t.is_none());
 
-    if timer_id.is_none() {
-        return WFS_ERR_INTERNAL_ERROR;
-    }
+    let timer_id = match timers.iter().position(|t| t.is_none()) {
+        Some(id) => id + 1,
+        None => return WFS_ERR_INTERNAL_ERROR,
+    };
 
-    timers.insert(timer_id.unwrap(), Some(TimerCtx { hWnd, lpContext }));
+    let timer = Timer {
+        hwnd: hWnd as ULONG_PTR,
+        lpcontext: lpContext as ULONG_PTR,
+    };
+
+    timers.insert(timer_id, Some(timer));
 
     unsafe {
         unsafe extern "system" fn timer_proc(_: HWND, _: UINT, id_event: UINT_PTR, _: DWORD) {
-            let timers = TIMERS.lock().unwrap();
-            let timer = timers.get(id_event).unwrap().as_ref().unwrap();
-            PostMessageA(timer.hWnd, WFS_TIMER_EVENT, id_event, timer.lpContext as LPARAM);
+            let timers = TIMERS.lock().unwrap(); // TODO: don't unwrap this shit, think of a better way to handle it?
+            if let Some(timer) = timers.get(id_event).and_then(|t| t.as_ref()) {
+                PostMessageA(timer.hwnd as HWND, WFS_TIMER_EVENT, id_event, timer.lpcontext as LPARAM);
+            }
         }
 
-        if SetTimer(std::ptr::null::<HWND>() as HWND, timer_id.unwrap() as UINT_PTR, dwTimeVal, Some(timer_proc)) == 0 {
+        if SetTimer(std::ptr::null_mut(), timer_id as UINT_PTR, dwTimeVal, Some(timer_proc)) == 0 {
+            timers.insert(timer_id, None);
             return WFS_ERR_INTERNAL_ERROR;
         }
-        *lpwTimerID = timer_id.unwrap() as u16;
+        *lpwTimerID = timer_id as u16;
     }
 
     WFS_SUCCESS
@@ -792,6 +796,7 @@ pub extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTimeVal: DW
 pub extern "stdcall" fn WFMSetTraceLevel(hService: HSERVICE, dwTraceLevel: DWORD) -> HRESULT {
     trace!("WFMSetTraceLevel");
     assert_started!();
+
     if hService == 0 {
         return WFS_ERR_INVALID_HSERVICE;
     }
