@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     ffi::{c_void, CStr, CString},
-    ptr,
+    mem, ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -25,7 +25,7 @@ use winapi::{
     um::{
         heapapi::{GetProcessHeap, HeapAlloc, HeapFree},
         winnt::{DLL_PROCESS_ATTACH, HEAP_ZERO_MEMORY, LPSTR},
-        winuser::{KillTimer, PostMessageA, SetTimer},
+        winuser::{DispatchMessageW, GetMessageW, KillTimer, PostMessageA, SetTimer, TranslateMessage},
     },
 };
 
@@ -41,7 +41,8 @@ lazy_static! {
     static ref HANDLES: Mutex<[bool; 8192]> = Mutex::new([false; 8192]);
     static ref STARTED: AtomicBool = AtomicBool::new(false);
     static ref TIMERS: Mutex<Vec<Option<Timer>>> = Mutex::new((0..65535).map(|_| None).collect());
-    pub static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Vec<ULONG_PTR>>> = Mutex::new(HashMap::new());
+    static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Vec<ULONG_PTR>>> = Mutex::new(HashMap::new());
+    static ref BLOCKED: AtomicBool = AtomicBool::new(false);
 }
 
 macro_rules! xfs_unwrap {
@@ -60,6 +61,14 @@ macro_rules! assert_started {
     () => {
         if !STARTED.load(Ordering::SeqCst) {
             return WFS_ERR_NOT_STARTED;
+        }
+    };
+}
+
+macro_rules! assert_unblocked {
+    () => {
+        if BLOCKED.load(Ordering::SeqCst) {
+            return WFS_ERR_OP_IN_PROGRESS;
         }
     };
 }
@@ -95,6 +104,7 @@ struct Timer {
 pub extern "stdcall" fn WFSCancelAsyncRequest(hService: HSERVICE, RequestID: REQUESTID) -> HRESULT {
     trace!("WFSCancelAsyncRequest");
     assert_started!();
+    assert_unblocked!();
 
     if hService == 0 {
         return WFS_ERR_INVALID_HSERVICE;
@@ -539,6 +549,7 @@ pub extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD
 pub extern "stdcall" fn WFSSetBlockingHook(_lpBlockFunc: XFSBLOCKINGHOOK, _lppPrevFunc: LPXFSBLOCKINGHOOK) -> HRESULT {
     trace!("WFSSetBlockingHook");
     assert_started!();
+    assert_unblocked!();
     WFS_SUCCESS
 }
 
@@ -859,4 +870,17 @@ fn call_async_result(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESU
     *lpp_result = createstruct;
 
     unsafe { (*createstruct).hResult }
+}
+
+fn block() {
+    loop {
+        unsafe {
+            let mut msg = mem::zeroed();
+            if GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) == 0 {
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
 }
