@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::{c_void, CStr, CString},
     mem, ptr,
     sync::{
@@ -24,6 +24,7 @@ use winapi::{
     },
     um::{
         heapapi::{GetProcessHeap, HeapAlloc, HeapFree},
+        processthreadsapi::GetCurrentThreadId,
         winnt::{DLL_PROCESS_ATTACH, HEAP_ZERO_MEMORY, LPSTR},
         winuser::{DispatchMessageW, GetMessageW, KillTimer, PostMessageA, SetTimer, TranslateMessage},
     },
@@ -38,11 +39,12 @@ mod window;
 
 lazy_static! {
     static ref SERVICES: Mutex<Vec<Option<Service>>> = Mutex::new((0..8192).map(|_| None).collect());
-    static ref HANDLES: Mutex<[bool; 8192]> = Mutex::new([false; 8192]);
+    static ref APP_HANDLES: Mutex<[bool; 8192]> = Mutex::new([false; 8192]);
     static ref STARTED: AtomicBool = AtomicBool::new(false);
     static ref TIMERS: Mutex<Vec<Option<Timer>>> = Mutex::new((0..65535).map(|_| None).collect());
     static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Vec<ULONG_PTR>>> = Mutex::new(HashMap::new());
     static ref BLOCKED: AtomicBool = AtomicBool::new(false);
+    static ref BLOCKS: Mutex<HashSet<DWORD>> = Mutex::new(HashSet::new());
 }
 
 macro_rules! xfs_unwrap {
@@ -66,11 +68,21 @@ macro_rules! assert_started {
 }
 
 macro_rules! assert_unblocked {
-    () => {
-        if BLOCKED.load(Ordering::SeqCst) {
+    () => {{
+        let thread_id = unsafe { GetCurrentThreadId() };
+
+        if xfs_unwrap!(BLOCKS.lock()).contains(&thread_id) {
             return WFS_ERR_OP_IN_PROGRESS;
         }
-    };
+    }};
+}
+
+macro_rules! block_thread {
+    () => {{
+        let thread_id = unsafe { GetCurrentThreadId() };
+
+        xfs_unwrap!(BLOCKS.lock()).insert(thread_id);
+    }};
 }
 
 macro_rules! get_service_req {
@@ -125,13 +137,18 @@ pub extern "stdcall" fn WFSCancelAsyncRequest(hService: HSERVICE, RequestID: REQ
 pub extern "stdcall" fn WFSCancelBlockingCall(_dwThreadID: DWORD) -> HRESULT {
     trace!("WFSCancelBlockingCall");
     assert_started!();
+
+    let thread_id = unsafe { GetCurrentThreadId() };
+
     WFS_SUCCESS // TODO: finish
 }
 
+// TODO: Close service providers
 #[allow(non_snake_case)]
 #[no_mangle]
 pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
     trace!("WFSCleanUp");
+    assert_unblocked!();
 
     let mut services = xfs_unwrap!(SERVICES.lock());
     *services = (0..8192).map(|_| None).collect();
@@ -139,7 +156,7 @@ pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
     let mut timers = xfs_unwrap!(TIMERS.lock());
     *timers = (0..65535).map(|_| None).collect();
 
-    let mut handles = xfs_unwrap!(HANDLES.lock());
+    let mut handles = xfs_unwrap!(APP_HANDLES.lock());
     *handles = [false; 8192];
 
     STARTED.store(false, Ordering::SeqCst);
@@ -152,6 +169,8 @@ pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
 pub extern "stdcall" fn WFSClose(hService: HSERVICE) -> HRESULT {
     trace!("WFSClose");
     assert_started!();
+    assert_unblocked!();
+    block_thread!();
     call_async(WFS_CLOSE_COMPLETE, |hwnd, reqid| WFSAsyncClose(hService, hwnd, reqid))
 }
 
@@ -160,6 +179,7 @@ pub extern "stdcall" fn WFSClose(hService: HSERVICE) -> HRESULT {
 pub extern "stdcall" fn WFSAsyncClose(hService: HSERVICE, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     trace!("WFSAsyncClose");
     assert_started!();
+    assert_unblocked!();
 
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = get_service_req!(hService, services);
@@ -172,29 +192,39 @@ pub extern "stdcall" fn WFSAsyncClose(hService: HSERVICE, hWnd: HWND, lpRequestI
     wfp_close(hService, hWnd, unsafe { *lpRequestID })
 }
 
+/// Requests a new, unique application handle value.
+///
+/// This function is used by an application to request a unique (within a single system) application
+/// handle from the XFS Manager (to be used in subsequent WFSOpen/WFSAsyncOpen calls).
+/// Note that an application may call this function multiple times in order to create multiple
+/// “application identities” for itself with respect to the XFS subsystem. See Sections 4.5 and 4.8.2
+/// for additional discussion.
+///
+/// # Note:
+/// As per section Section 4.5, neither service nor application handles may be shared among two or more applications.
+/// This algorithm makes use of the uniqueness of system pointers.
+/// It takes the base pointer of array in the process memory and adds offset to it,
+/// thus making it unique for each application process and/or thread.
 #[allow(non_snake_case)]
 #[no_mangle]
 pub extern "stdcall" fn WFSCreateAppHandle(lphApp: &mut HAPP) -> HRESULT {
     trace!("WFSCreateAppHandle");
     assert_started!();
+    assert_unblocked!();
 
-    let mut handles = xfs_unwrap!(HANDLES.lock());
+    let mut handles = xfs_unwrap!(APP_HANDLES.lock());
 
-    let index = match handles.iter().position(|h| !h) {
-        Some(index) => index,
+    let free = match handles.iter().position(|h| !h) {
+        Some(index) => {
+            handles[index] = true;
+            index
+        }
         None => return WFS_ERR_INTERNAL_ERROR,
     };
 
-    handles[index] = true;
-
-    let index: usize = index + 1;
-    let index_ptr: *const usize = &index;
-    let index_happ: HAPP = index_ptr as HAPP;
-
-    unsafe {
-        *lphApp = index_happ;
-        trace!("Created app handle {:?}", **lphApp);
-    }
+    let ptr = (&*handles) as *const _ as usize + free;
+    *lphApp = ptr as HAPP;
+    trace!("Created app handle {:?}", ptr);
 
     trace!("XFS APP HANDLE DONE");
     WFS_SUCCESS
@@ -205,6 +235,7 @@ pub extern "stdcall" fn WFSCreateAppHandle(lphApp: &mut HAPP) -> HRESULT {
 pub extern "stdcall" fn WFSDeregister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
     trace!("WFSDeregister");
     assert_started!();
+    assert_unblocked!();
     call_async(WFS_DEREGISTER_COMPLETE, |hwnd, request_id| WFSAsyncDeregister(hService, dwEventClass, hWndReg, hwnd, request_id))
 }
 
@@ -213,6 +244,7 @@ pub extern "stdcall" fn WFSDeregister(hService: HSERVICE, dwEventClass: DWORD, h
 pub extern "stdcall" fn WFSAsyncDeregister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     trace!("WFSAsyncDeregister");
     assert_started!();
+    assert_unblocked!();
 
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = get_service_req!(hService, services);
@@ -225,19 +257,30 @@ pub extern "stdcall" fn WFSAsyncDeregister(hService: HSERVICE, dwEventClass: DWO
     wfp_deregister(hService, dwEventClass, hWndReg, hWnd, unsafe { *lpRequestID })
 }
 
+/// Makes the specified application handle invalid.
+///
+/// This function is used by an application to indicate to the XFS Manager that it will no longer use
+/// the specified application handle (from a previous WFSCreateAppHandle call). See
+/// WFSCreateAppHandle and Sections 4.5 and 4.8.2 for additional discussion.
 #[allow(non_snake_case)]
 #[no_mangle]
 pub extern "stdcall" fn WFSDestroyAppHandle(hApp: HAPP) -> HRESULT {
     trace!("WFSDestroyAppHandle");
     assert_started!();
+    assert_unblocked!();
 
     if hApp.is_null() {
         return WFS_ERR_INVALID_APP_HANDLE;
     }
 
-    let mut handles = xfs_unwrap!(HANDLES.lock());
-    let index = hApp as usize - 1;
-    handles[index] = false;
+    let mut handles = xfs_unwrap!(APP_HANDLES.lock());
+    let ptr = (&*handles) as *const _ as usize;
+    let index = hApp as usize - ptr;
+
+    match handles.get_mut(index) {
+        Some(h) => *h = false,
+        None => return WFS_ERR_INVALID_APP_HANDLE,
+    }
 
     WFS_SUCCESS
 }
@@ -247,6 +290,7 @@ pub extern "stdcall" fn WFSDestroyAppHandle(hApp: HAPP) -> HRESULT {
 pub extern "stdcall" fn WFSExecute(hService: HSERVICE, dwCommandd: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
     trace!("WFSExecute");
     assert_started!();
+    assert_unblocked!();
     call_async_result(
         WFS_EXECUTE_COMPLETE,
         |hwnd, request_id| WFSAsyncExecute(hService, dwCommandd, lpCmdData, dwTimeOut, hwnd, request_id),
@@ -259,6 +303,7 @@ pub extern "stdcall" fn WFSExecute(hService: HSERVICE, dwCommandd: DWORD, lpCmdD
 pub extern "stdcall" fn WFSAsyncExecute(hService: HSERVICE, dwCommand: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     trace!("WFSAsyncExecute");
     assert_started!();
+    assert_unblocked!();
 
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = get_service_req!(hService, services);
@@ -275,6 +320,7 @@ pub extern "stdcall" fn WFSAsyncExecute(hService: HSERVICE, dwCommand: DWORD, lp
 #[no_mangle]
 pub extern "stdcall" fn WFSFreeResult(lpResult: LPWFSRESULT) -> HRESULT {
     assert_started!();
+    assert_unblocked!();
     WFMFreeBuffer(lpResult as *mut c_void)
 }
 
@@ -283,6 +329,7 @@ pub extern "stdcall" fn WFSFreeResult(lpResult: LPWFSRESULT) -> HRESULT {
 pub extern "stdcall" fn WFSGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQueryDetails: LPVOID, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
     trace!("WFSGetInfo");
     assert_started!();
+    assert_unblocked!();
     call_async_result(
         WFS_GETINFO_COMPLETE,
         |hwnd, request_id| WFSAsyncGetInfo(hService, dwCategory, lpQueryDetails, dwTimeOut, hwnd, request_id),
@@ -295,6 +342,7 @@ pub extern "stdcall" fn WFSGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQuer
 pub extern "stdcall" fn WFSAsyncGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQueryDetails: LPVOID, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     trace!("WFSAsyncGetInfo");
     assert_started!();
+    assert_unblocked!();
 
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = get_service_req!(hService, services);
@@ -310,7 +358,9 @@ pub extern "stdcall" fn WFSAsyncGetInfo(hService: HSERVICE, dwCategory: DWORD, l
 #[allow(non_snake_case)]
 #[no_mangle]
 pub extern "stdcall" fn WFSIsBlocking() -> bool {
-    false
+    let thread_id = unsafe { GetCurrentThreadId() };
+
+    BLOCKS.lock().unwrap().contains(&thread_id)
 }
 
 #[allow(non_snake_case)]
@@ -318,6 +368,7 @@ pub extern "stdcall" fn WFSIsBlocking() -> bool {
 pub extern "stdcall" fn WFSLock(hService: HSERVICE, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
     trace!("WFSLock");
     assert_started!();
+    assert_unblocked!();
     call_async_result(WFS_LOCK_COMPLETE, |hwnd, request_id| WFSAsyncLock(hService, dwTimeOut, hwnd, request_id), lppResult)
 }
 
@@ -326,6 +377,7 @@ pub extern "stdcall" fn WFSLock(hService: HSERVICE, dwTimeOut: DWORD, lppResult:
 pub extern "stdcall" fn WFSAsyncLock(hService: HSERVICE, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     trace!("WFSAsyncLock");
     assert_started!();
+    assert_unblocked!();
 
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = get_service_req!(hService, services);
@@ -353,6 +405,7 @@ pub extern "stdcall" fn WFSOpen(
 ) -> HRESULT {
     trace!("WFSOpen");
     assert_started!();
+    assert_unblocked!();
 
     let result = call_async(WFS_OPEN_COMPLETE, |hwnd, request_id| {
         WFSAsyncOpen(
@@ -389,11 +442,12 @@ pub extern "stdcall" fn WFSAsyncOpen(
     lpSPIVersion: LPWFSVERSION,
     lpRequestID: LPREQUESTID,
 ) -> HRESULT {
+    assert_started!();
+    assert_unblocked!();
+
     if lpszLogicalName.is_null() || lpszAppID.is_null() || lphService.is_null() || lpSrvcVersion.is_null() || lpSPIVersion.is_null() {
         return WFS_ERR_INVALID_POINTER;
     }
-
-    assert_started!();
 
     let service_index = {
         let services = xfs_unwrap!(SERVICES.lock());
@@ -524,6 +578,7 @@ pub extern "stdcall" fn WFSAsyncOpen(
 pub extern "stdcall" fn WFSRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
     trace!("WFSRegister");
     assert_started!();
+    assert_unblocked!();
     call_async(WFS_GETINFO_COMPLETE, |hwnd, request_id| WFSAsyncRegister(hService, dwEventClass, hWndReg, hwnd, request_id))
 }
 
@@ -532,6 +587,7 @@ pub extern "stdcall" fn WFSRegister(hService: HSERVICE, dwEventClass: DWORD, hWn
 pub extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     trace!("WFSAsyncRegister");
     assert_started!();
+    assert_unblocked!();
 
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = get_service_req!(hService, services);
@@ -600,6 +656,7 @@ pub extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWF
 pub extern "stdcall" fn WFSUnhookBlockingHook() -> HRESULT {
     trace!("WFSUnhookBlockingHook");
     assert_started!();
+    assert_unblocked!();
     WFS_SUCCESS
 }
 
@@ -608,6 +665,7 @@ pub extern "stdcall" fn WFSUnhookBlockingHook() -> HRESULT {
 pub extern "stdcall" fn WFSUnlock(hService: HSERVICE) -> HRESULT {
     trace!("WFSUnlock");
     assert_started!();
+    assert_unblocked!();
     call_async(WFS_GETINFO_COMPLETE, |hwnd, request_id| WFSAsyncUnlock(hService, hwnd, request_id))
 }
 
@@ -616,6 +674,7 @@ pub extern "stdcall" fn WFSUnlock(hService: HSERVICE) -> HRESULT {
 pub extern "stdcall" fn WFSAsyncUnlock(hService: HSERVICE, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     trace!("WFSAsyncUnlock");
     assert_started!();
+    assert_unblocked!();
 
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = get_service_req!(hService, services);
