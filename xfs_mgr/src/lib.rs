@@ -4,7 +4,7 @@ use std::{
     mem, ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Mutex, RwLock,
     },
 };
 
@@ -45,6 +45,8 @@ lazy_static! {
     static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Vec<ULONG_PTR>>> = Mutex::new(HashMap::new());
     static ref BLOCKED: AtomicBool = AtomicBool::new(false);
     static ref BLOCKS: Mutex<HashSet<DWORD>> = Mutex::new(HashSet::new());
+    static ref UNBLOCKS: RwLock<HashMap<DWORD, AtomicBool>> = RwLock::new(HashMap::new());
+    static ref BLOCKING_HOOK: Mutex<Option<XFSBLOCKINGHOOK>> = Mutex::new(None);
 }
 
 macro_rules! xfs_unwrap {
@@ -134,13 +136,21 @@ pub extern "stdcall" fn WFSCancelAsyncRequest(hService: HSERVICE, RequestID: REQ
 
 #[allow(non_snake_case)]
 #[no_mangle]
-pub extern "stdcall" fn WFSCancelBlockingCall(_dwThreadID: DWORD) -> HRESULT {
+pub extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT {
     trace!("WFSCancelBlockingCall");
     assert_started!();
 
-    let thread_id = unsafe { GetCurrentThreadId() };
+    let thread_id = match dwThreadID {
+        0 => unsafe { GetCurrentThreadId() },
+        _ => dwThreadID,
+    };
 
-    WFS_SUCCESS // TODO: finish
+    let unblocks = xfs_unwrap!(UNBLOCKS.read());
+    if let Some(unblock) = unblocks.get(&thread_id) {
+        unblock.store(true, Ordering::SeqCst);
+    }
+
+    WFS_SUCCESS
 }
 
 // TODO: Close service providers
@@ -602,10 +612,19 @@ pub extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD
 
 #[allow(non_snake_case)]
 #[no_mangle]
-pub extern "stdcall" fn WFSSetBlockingHook(_lpBlockFunc: XFSBLOCKINGHOOK, _lppPrevFunc: LPXFSBLOCKINGHOOK) -> HRESULT {
+pub extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrevFunc: LPXFSBLOCKINGHOOK) -> HRESULT {
     trace!("WFSSetBlockingHook");
     assert_started!();
     assert_unblocked!();
+
+    let blocking_hook = unsafe {
+        let mut blocking_hook = BLOCKING_HOOK.lock().unwrap();
+        *blocking_hook = Some(XFSBLOCKINGHOOK {
+            lpBlockFunc: _lpBlockFunc,
+            lppPrevFunc: _lppPrevFunc,
+        });
+        *blocking_hook.as_mut().unwrap()
+    };
     WFS_SUCCESS
 }
 

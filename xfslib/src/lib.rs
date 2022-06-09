@@ -23,7 +23,7 @@ pub type HAPP = HANDLE;
 pub type LPHAPP = *mut HAPP;
 pub type LPREQUESTID = *mut ULONG;
 pub type HPROVIDER = HANDLE;
-pub type XFSBLOCKINGHOOK = extern "C" fn(*mut u32);
+pub type XFSBLOCKINGHOOK = extern "C" fn() -> bool;
 pub type LPXFSBLOCKINGHOOK = *mut XFSBLOCKINGHOOK;
 
 #[derive(Debug)]
