@@ -125,7 +125,7 @@ pub unsafe extern "stdcall" fn WFSCancelAsyncRequest(hService: HSERVICE, Request
 
 #[allow(non_snake_case)]
 #[no_mangle]
-pub unsafe extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT { 
+pub unsafe extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT {
     trace!("WFSCancelBlockingCall: {}", dwThreadID);
     (XFS.WFSCancelBlockingCall)(dwThreadID)
 }
@@ -147,48 +147,58 @@ pub unsafe extern "stdcall" fn WFSClose(hService: HSERVICE) -> HRESULT {
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSAsyncClose(hService: HSERVICE, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
+    trace!("WFSAsyncClose: {}", hService);
     (XFS.WFSAsyncClose)(hService, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSCreateAppHandle(lphApp: LPHAPP) -> HRESULT {
-    (XFS.WFSCreateAppHandle)(lphApp)
+    trace!("WFSCreateAppHandle");
+    let result = (XFS.WFSCreateAppHandle)(lphApp);
+    trace!("WFSCreateAppHandle: {}, handle: {:?}, handlev: {:?}", result, *lphApp, **lphApp);
+    result
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSDeregister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
+    trace!("WFSDeregister");
     (XFS.WFSDeregister)(hService, dwEventClass, hWndReg)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSAsyncDeregister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
+    trace!("WFSAsyncDeregister");
     (XFS.WFSAsyncDeregister)(hService, dwEventClass, hWndReg, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSDestroyAppHandle(hApp: HAPP) -> HRESULT {
+    trace!("WFSDestroyAppHandle");
     (XFS.WFSDestroyAppHandle)(hApp)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSExecute(hService: HSERVICE, dwCommand: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, lppResult: *mut LPWFSRESULT) -> HRESULT {
+    trace!("WFSExecute");
     (XFS.WFSExecute)(hService, dwCommand, lpCmdData, dwTimeOut, lppResult)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSAsyncExecute(hService: HSERVICE, dwCommand: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
+    trace!("WFSAsyncExecute");
     (XFS.WFSAsyncExecute)(hService, dwCommand, lpCmdData, dwTimeOut, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSFreeResult(lpResult: LPWFSRESULT) -> HRESULT {
+    trace!("WFSFreeResult");
     (XFS.WFSFreeResult)(lpResult)
 }
 
@@ -226,18 +236,21 @@ pub unsafe extern "stdcall" fn WFSAsyncGetInfo(hService: HSERVICE, dwCategory: D
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSIsBlocking() -> bool {
+    trace!("WFSIsBlocking");
     (XFS.WFSIsBlocking)()
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSLock(hService: HSERVICE, dwTimeOut: DWORD, lppResult: *mut LPWFSRESULT) -> HRESULT {
+    trace!("WFSLock");
     (XFS.WFSLock)(hService, dwTimeOut, lppResult)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSAsyncLock(hService: HSERVICE, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
+    trace!("WFSAsyncLock");
     (XFS.WFSAsyncLock)(hService, dwTimeOut, hWnd, lpRequestID)
 }
 
@@ -307,6 +320,7 @@ pub unsafe extern "stdcall" fn WFSAsyncOpen(
     lpSPIVersion: LPWFSVERSION,
     lpRequestID: LPREQUESTID,
 ) -> HRESULT {
+    trace!("WFSAsyncOpen");
     (XFS.WFSAsyncOpen)(
         lpszLogicalName,
         hApp,
@@ -325,18 +339,21 @@ pub unsafe extern "stdcall" fn WFSAsyncOpen(
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
+    trace!("WFSRegister");
     (XFS.WFSRegister)(hService, dwEventClass, hWndReg)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
+    trace!("WFSAsyncRegister");
     (XFS.WFSAsyncRegister)(hService, dwEventClass, hWndReg, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrevFunc: LPXFSBLOCKINGHOOK) -> HRESULT {
+    trace!("WFSSetBlockingHook");
     (XFS.WFSSetBlockingHook)(lpBlockFunc, lppPrevFunc)
 }
 
@@ -352,71 +369,83 @@ pub unsafe extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersio
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSUnhookBlockingHook() -> HRESULT {
+    trace!("WFSUnhookBlockingHook");
     (XFS.WFSUnhookBlockingHook)()
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSUnlock(hService: HSERVICE) -> HRESULT {
+    trace!("WFSUnlock");
     (XFS.WFSUnlock)(hService)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSAsyncUnlock(hService: HSERVICE, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
+    trace!("WFSAsyncUnlock");
     (XFS.WFSAsyncUnlock)(hService, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvData: *mut LPVOID) -> HRESULT {
+    trace!("WFMAllocateBuffer");
     (XFS.WFMAllocateBuffer)(ulSize, ulFlags, lppvData)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppvData: *mut LPVOID) -> HRESULT {
+    trace!("WFMAllocateMore");
     (XFS.WFMAllocateMore)(ulSize, lpvOriginal, lppvData)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
+    trace!("WFMFreeBuffer");
     (XFS.WFMFreeBuffer)(lpvData)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFMGetTraceLevel(hService: HSERVICE, lpdwTraceLevel: LPDWORD) -> HRESULT {
+    trace!("WFMGetTraceLevel");
     (XFS.WFMGetTraceLevel)(hService, lpdwTraceLevel)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
+    trace!("WFMKillTimer");
     (XFS.WFMKillTimer)(wTimerID)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFMOutputTraceData(lpszData: LPSTR) -> HRESULT {
+    trace!("WFMOutputTraceData");
     (XFS.WFMOutputTraceData)(lpszData)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFMReleaseDLL(hProvider: HPROVIDER) -> HRESULT {
+    trace!("WFMReleaseDLL");
     (XFS.WFMReleaseDLL)(hProvider)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTimeVal: DWORD, lpwTimerID: LPWORD) -> HRESULT {
+    trace!("WFMSetTimer");
     (XFS.WFMSetTimer)(hWnd, lpContext, dwTimeVal, lpwTimerID)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFMSetTraceLevel(hService: HSERVICE, dwTraceLevel: DWORD) -> HRESULT {
+    trace!("WFMSetTraceLevel");
     (XFS.WFMSetTraceLevel)(hService, dwTraceLevel)
 }
