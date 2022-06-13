@@ -100,8 +100,15 @@ impl SyncWindow {
         }
     }
 
-    pub fn wait(&self) -> Result<u32, Box<dyn std::error::Error>> {
-        Ok(self.receiver.recv()?)
+    pub fn try_receive(&self) -> Result<Option<u32>, Box<dyn std::error::Error>> {
+        match self.receiver.try_recv() {
+            Ok(message) => Ok(Some(message)),
+            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Disconnected",
+            ))),
+        }
     }
 
     pub fn handle(&self) -> HWND {

@@ -1,15 +1,15 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ffi::{c_void, CStr, CString},
     mem, ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, RwLock,
+        Mutex,
     },
 };
 
 use lazy_static::lazy_static;
-use log::{trace, LevelFilter};
+use log::{error, trace, LevelFilter};
 use log4rs::{
     append::file::FileAppender,
     config::{Appender, Root},
@@ -38,29 +38,42 @@ mod spi;
 mod window;
 
 lazy_static! {
+    // holds service handles
     static ref SERVICES: Mutex<Vec<Option<Service>>> = Mutex::new((0..8192).map(|_| None).collect());
+
+    // holds app handles
     static ref APP_HANDLES: Mutex<[bool; 8192]> = Mutex::new([false; 8192]);
+
+    // indicates whether WFSStartup has been called
     static ref STARTED: AtomicBool = AtomicBool::new(false);
+
+    // holds application timers
     static ref TIMERS: Mutex<Vec<Option<Timer>>> = Mutex::new((0..65535).map(|_| None).collect());
+
+    // holds application & service providers buffers
     static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Vec<ULONG_PTR>>> = Mutex::new(HashMap::new());
-    static ref BLOCKED: AtomicBool = AtomicBool::new(false);
-    static ref BLOCKS: Mutex<HashSet<DWORD>> = Mutex::new(HashSet::new());
-    static ref UNBLOCKS: RwLock<HashMap<DWORD, AtomicBool>> = RwLock::new(HashMap::new());
+
+    // holds blocked threads and unblock flag
+    static ref BLOCKED_THREADS: Mutex<HashMap<DWORD, bool>> = Mutex::new(HashMap::new());
+
+    // holds application defined blocking hook
     static ref BLOCKING_HOOK: Mutex<Option<XFSBLOCKINGHOOK>> = Mutex::new(None);
 }
 
+/// Unwraps result, logging error if any and returning xfs internal error value.
 macro_rules! xfs_unwrap {
     ($l:expr) => {
         match $l {
             Ok(result) => result,
             Err(error) => {
-                trace!("{:?}", error);
+                error!("{:?}", error);
                 return WFS_ERR_INTERNAL_ERROR;
             }
         }
     };
 }
 
+/// Asserts that the WFSStartup function has been called.
 macro_rules! assert_started {
     () => {
         if !STARTED.load(Ordering::SeqCst) {
@@ -69,24 +82,32 @@ macro_rules! assert_started {
     };
 }
 
+/// Asserts that the current thread id does not have a blocking call in progress.
 macro_rules! assert_unblocked {
     () => {{
         let thread_id = unsafe { GetCurrentThreadId() };
 
-        if xfs_unwrap!(BLOCKS.lock()).contains(&thread_id) {
+        if xfs_unwrap!(BLOCKED_THREADS.lock()).contains_key(&thread_id) {
             return WFS_ERR_OP_IN_PROGRESS;
         }
     }};
 }
 
+/// Asserts that the current thread id does not have a blocking call in progress and sets the blocking status to true.
 macro_rules! block_thread {
     () => {{
         let thread_id = unsafe { GetCurrentThreadId() };
+        let mut blocked_threads = xfs_unwrap!(BLOCKED_THREADS.lock());
 
-        xfs_unwrap!(BLOCKS.lock()).insert(thread_id);
+        if blocked_threads.contains_key(&thread_id) {
+            return WFS_ERR_OP_IN_PROGRESS;
+        } else {
+            blocked_threads.insert(thread_id, false);
+        }
     }};
 }
 
+/// Gets a service by handle and increments the request id
 macro_rules! get_service_req {
     ($hService:expr, $services:expr) => {{
         match $hService {
@@ -111,6 +132,7 @@ struct Service {
 struct Timer {
     hwnd: ULONG_PTR,
     lpcontext: ULONG_PTR,
+    timer_id: usize,
 }
 
 #[allow(non_snake_case)]
@@ -120,11 +142,15 @@ pub extern "stdcall" fn WFSCancelAsyncRequest(hService: HSERVICE, RequestID: REQ
     assert_started!();
     assert_unblocked!();
 
+    let services = xfs_unwrap!(SERVICES.lock());
+    if let Some(service) = services.get(hService as usize - 1).and_then(|service| service.as_ref()) {
+        let wfp_cancel_async_request = unsafe { xfs_unwrap!(service.library.get::<spi::WfpCancelAsyncRequest>(b"WFPCancelAsyncRequest")) };
+        return wfp_cancel_async_request(hService, RequestID);
+    }
+
     if hService == 0 {
         return WFS_ERR_INVALID_HSERVICE;
     }
-
-    let services = xfs_unwrap!(SERVICES.lock());
 
     if let Some(service) = services.get(hService as usize - 1).and_then(|service| service.as_ref()) {
         let wfp_cancel_async_request = unsafe { xfs_unwrap!(service.library.get::<spi::WfpCancelAsyncRequest>(b"WFPCancelAsyncRequest")) };
@@ -145,9 +171,10 @@ pub extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT {
         _ => dwThreadID,
     };
 
-    let unblocks = xfs_unwrap!(UNBLOCKS.read());
-    if let Some(unblock) = unblocks.get(&thread_id) {
-        unblock.store(true, Ordering::SeqCst);
+    let mut blocks = xfs_unwrap!(BLOCKED_THREADS.lock());
+
+    if blocks.contains_key(&thread_id) {
+        blocks.insert(thread_id, true);
     }
 
     WFS_SUCCESS
@@ -179,9 +206,8 @@ pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
 pub extern "stdcall" fn WFSClose(hService: HSERVICE) -> HRESULT {
     trace!("WFSClose");
     assert_started!();
-    assert_unblocked!();
     block_thread!();
-    call_async(WFS_CLOSE_COMPLETE, |hwnd, reqid| WFSAsyncClose(hService, hwnd, reqid))
+    call_async(WFS_CLOSE_COMPLETE, |hwnd, reqid| WFSAsyncClose(hService, hwnd, reqid), &mut ptr::null_mut())
 }
 
 #[allow(non_snake_case)]
@@ -196,7 +222,8 @@ pub extern "stdcall" fn WFSAsyncClose(hService: HSERVICE, hWnd: HWND, lpRequestI
 
     let wfp_close = unsafe {
         *lpRequestID = service.request_id as u32;
-        xfs_unwrap!(service.library.get::<spi::WfpClose>(b"WfpClose"))
+        trace!("CALLING WFP Close");
+        xfs_unwrap!(service.library.get::<spi::WfpClose>(b"WFPClose"))
     };
 
     wfp_close(hService, hWnd, unsafe { *lpRequestID })
@@ -217,7 +244,7 @@ pub extern "stdcall" fn WFSAsyncClose(hService: HSERVICE, hWnd: HWND, lpRequestI
 /// thus making it unique for each application process and/or thread.
 #[allow(non_snake_case)]
 #[no_mangle]
-pub extern "stdcall" fn WFSCreateAppHandle(lphApp: &mut HAPP) -> HRESULT {
+pub extern "stdcall" fn WFSCreateAppHandle(lphApp: LPHAPP) -> HRESULT {
     trace!("WFSCreateAppHandle");
     assert_started!();
     assert_unblocked!();
@@ -233,7 +260,9 @@ pub extern "stdcall" fn WFSCreateAppHandle(lphApp: &mut HAPP) -> HRESULT {
     };
 
     let ptr = (&*handles) as *const _ as usize + free;
-    *lphApp = ptr as HAPP;
+    unsafe {
+        *lphApp = ptr as HAPP;
+    }
     trace!("Created app handle {:?}", ptr);
 
     trace!("XFS APP HANDLE DONE");
@@ -245,8 +274,12 @@ pub extern "stdcall" fn WFSCreateAppHandle(lphApp: &mut HAPP) -> HRESULT {
 pub extern "stdcall" fn WFSDeregister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
     trace!("WFSDeregister");
     assert_started!();
-    assert_unblocked!();
-    call_async(WFS_DEREGISTER_COMPLETE, |hwnd, request_id| WFSAsyncDeregister(hService, dwEventClass, hWndReg, hwnd, request_id))
+    block_thread!();
+    call_async(
+        WFS_DEREGISTER_COMPLETE,
+        |hwnd, request_id| WFSAsyncDeregister(hService, dwEventClass, hWndReg, hwnd, request_id),
+        &mut ptr::null_mut(),
+    )
 }
 
 #[allow(non_snake_case)]
@@ -300,8 +333,8 @@ pub extern "stdcall" fn WFSDestroyAppHandle(hApp: HAPP) -> HRESULT {
 pub extern "stdcall" fn WFSExecute(hService: HSERVICE, dwCommandd: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
     trace!("WFSExecute");
     assert_started!();
-    assert_unblocked!();
-    call_async_result(
+    block_thread!();
+    call_async(
         WFS_EXECUTE_COMPLETE,
         |hwnd, request_id| WFSAsyncExecute(hService, dwCommandd, lpCmdData, dwTimeOut, hwnd, request_id),
         lppResult,
@@ -339,8 +372,8 @@ pub extern "stdcall" fn WFSFreeResult(lpResult: LPWFSRESULT) -> HRESULT {
 pub extern "stdcall" fn WFSGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQueryDetails: LPVOID, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
     trace!("WFSGetInfo");
     assert_started!();
-    assert_unblocked!();
-    call_async_result(
+    block_thread!();
+    call_async(
         WFS_GETINFO_COMPLETE,
         |hwnd, request_id| WFSAsyncGetInfo(hService, dwCategory, lpQueryDetails, dwTimeOut, hwnd, request_id),
         lppResult,
@@ -368,9 +401,9 @@ pub extern "stdcall" fn WFSAsyncGetInfo(hService: HSERVICE, dwCategory: DWORD, l
 #[allow(non_snake_case)]
 #[no_mangle]
 pub extern "stdcall" fn WFSIsBlocking() -> bool {
+    trace!("WFSIsBlocking");
     let thread_id = unsafe { GetCurrentThreadId() };
-
-    BLOCKS.lock().unwrap().contains(&thread_id)
+    BLOCKED_THREADS.lock().unwrap().contains_key(&thread_id)
 }
 
 #[allow(non_snake_case)]
@@ -378,8 +411,8 @@ pub extern "stdcall" fn WFSIsBlocking() -> bool {
 pub extern "stdcall" fn WFSLock(hService: HSERVICE, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
     trace!("WFSLock");
     assert_started!();
-    assert_unblocked!();
-    call_async_result(WFS_LOCK_COMPLETE, |hwnd, request_id| WFSAsyncLock(hService, dwTimeOut, hwnd, request_id), lppResult)
+    block_thread!();
+    call_async(WFS_LOCK_COMPLETE, |hwnd, request_id| WFSAsyncLock(hService, dwTimeOut, hwnd, request_id), lppResult)
 }
 
 #[allow(non_snake_case)]
@@ -400,6 +433,10 @@ pub extern "stdcall" fn WFSAsyncLock(hService: HSERVICE, dwTimeOut: DWORD, hWnd:
     wfp_lock(hService, dwTimeOut, hWnd, unsafe { *lpRequestID })
 }
 
+/// Initiates a session (a series of service requests terminated with the WFSClose function) between the application and
+/// the specified service. This does not necessarily mean that the hardware is opened. This command will return with
+/// WFS_SUCCESS even if the hardware is inoperable, offline or powered off. The status of the device can be
+/// requested through a WFSGetInfo command.
 #[allow(non_snake_case)]
 #[no_mangle]
 pub extern "stdcall" fn WFSOpen(
@@ -415,23 +452,27 @@ pub extern "stdcall" fn WFSOpen(
 ) -> HRESULT {
     trace!("WFSOpen");
     assert_started!();
-    assert_unblocked!();
+    block_thread!();
 
-    let result = call_async(WFS_OPEN_COMPLETE, |hwnd, request_id| {
-        WFSAsyncOpen(
-            lpszLogicalName,
-            hApp,
-            lpszAppID,
-            dwTraceLevel,
-            dwTimeOut,
-            lphService,
-            hwnd,
-            dwSrvcVersionsRequired,
-            lpSrvcVersion,
-            lpSPIVersion,
-            request_id,
-        )
-    });
+    let result = call_async(
+        WFS_OPEN_COMPLETE,
+        |hwnd, request_id| {
+            WFSAsyncOpen(
+                lpszLogicalName,
+                hApp,
+                lpszAppID,
+                dwTraceLevel,
+                dwTimeOut,
+                lphService,
+                hwnd,
+                dwSrvcVersionsRequired,
+                lpSrvcVersion,
+                lpSPIVersion,
+                request_id,
+            )
+        },
+        &mut ptr::null_mut(),
+    );
 
     trace!("WFSOpen result: {:?}", result);
     result
@@ -455,17 +496,12 @@ pub extern "stdcall" fn WFSAsyncOpen(
     assert_started!();
     assert_unblocked!();
 
-    if lpszLogicalName.is_null() || lpszAppID.is_null() || lphService.is_null() || lpSrvcVersion.is_null() || lpSPIVersion.is_null() {
-        return WFS_ERR_INVALID_POINTER;
+    unsafe {
+        trace!("OPENING DEVICE: {}", CStr::from_ptr(lpszLogicalName).to_str().unwrap());
     }
-
-    let service_index = {
-        let services = xfs_unwrap!(SERVICES.lock());
-        match services.iter().position(|s| s.is_none()) {
-            Some(index) => index,
-            None => return WFS_ERR_INTERNAL_ERROR,
-        }
-    };
+    // if lpszLogicalName.is_null() || lpszAppID.is_null() || lphService.is_null() || lpSrvcVersion.is_null() || lpSPIVersion.is_null() {
+    //     return WFS_ERR_INVALID_POINTER;
+    // }
 
     unsafe {
         *lphService = 0;
@@ -515,7 +551,7 @@ pub extern "stdcall" fn WFSAsyncOpen(
         let mut phy_key: HKEY = ptr::null_mut();
 
         let lgl_prov_path = &lgl_prov_path[..*lgl_prov_len as usize];
-        let lgl_prov_path = xfs_unwrap!(xfs_unwrap!(CStr::from_bytes_with_nul(lgl_prov_path)).to_str());
+        let lgl_prov_path = xfs_unwrap!(std::str::from_utf8(lgl_prov_path));
         let path = xfs_unwrap!(CString::new(format!("SERVICE_PROVIDERS\\{}", lgl_prov_path)));
 
         trace!("OPENING {}", path.to_str().unwrap());
@@ -535,17 +571,21 @@ pub extern "stdcall" fn WFSAsyncOpen(
     }
 
     let phy_prov_path = &phy_prov_path[..*phy_prov_len as usize];
-    let phy_prov_path = xfs_unwrap!(xfs_unwrap!(CStr::from_bytes_with_nul(phy_prov_path)).to_str());
+    let phy_prov_path = xfs_unwrap!(std::str::from_utf8(phy_prov_path));
 
     trace!("WFSOpen: phy_prov_path: {:?}", phy_prov_path);
     let library = unsafe { xfs_unwrap!(libloading::Library::new(phy_prov_path)) };
 
     let mut services = xfs_unwrap!(SERVICES.lock());
-    let request_id = 1;
+
+    let service_index = match services.iter().position(|s| s.is_none()) {
+        Some(index) => index,
+        None => return WFS_ERR_INTERNAL_ERROR,
+    };
 
     services[service_index] = Some(Service {
         library,
-        request_id,
+        request_id: 1,
         trace_level: dwTraceLevel,
     });
 
@@ -554,8 +594,8 @@ pub extern "stdcall" fn WFSAsyncOpen(
         *lpRequestID = 1;
     }
 
-    let mut service_index = service_index;
-    let serviceHandle = &mut service_index as *mut usize as *mut c_void;
+    let service_handle = (&*services) as *const _ as HPROVIDER;
+    let service_handle = unsafe { service_handle.add(service_index) };
 
     let service = services[service_index].as_ref().unwrap();
 
@@ -572,7 +612,7 @@ pub extern "stdcall" fn WFSAsyncOpen(
             dwTimeOut,
             hWnd,
             *lpRequestID,
-            serviceHandle,
+            service_handle,
             VersionRange::new_explicit(Version::new_explicit(3, 0), Version::new_explicit(3, 30)).value(),
             lpSPIVersion,
             dwSrvcVersionsRequired,
@@ -588,8 +628,12 @@ pub extern "stdcall" fn WFSAsyncOpen(
 pub extern "stdcall" fn WFSRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
     trace!("WFSRegister");
     assert_started!();
-    assert_unblocked!();
-    call_async(WFS_GETINFO_COMPLETE, |hwnd, request_id| WFSAsyncRegister(hService, dwEventClass, hWndReg, hwnd, request_id))
+    block_thread!();
+    call_async(
+        WFS_GETINFO_COMPLETE,
+        |hwnd, request_id| WFSAsyncRegister(hService, dwEventClass, hWndReg, hwnd, request_id),
+        &mut ptr::null_mut(),
+    )
 }
 
 #[allow(non_snake_case)]
@@ -617,14 +661,18 @@ pub extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrev
     assert_started!();
     assert_unblocked!();
 
-    let blocking_hook = unsafe {
-        let mut blocking_hook = BLOCKING_HOOK.lock().unwrap();
-        *blocking_hook = Some(XFSBLOCKINGHOOK {
-            lpBlockFunc: _lpBlockFunc,
-            lppPrevFunc: _lppPrevFunc,
-        });
-        *blocking_hook.as_mut().unwrap()
-    };
+    let mut blocking_hook = xfs_unwrap!(BLOCKING_HOOK.lock());
+
+    match *blocking_hook {
+        Some(prev) => unsafe {
+            *lppPrevFunc = prev;
+            *blocking_hook = Some(lpBlockFunc);
+        },
+        None => {
+            *blocking_hook = Some(lpBlockFunc);
+        }
+    }
+
     WFS_SUCCESS
 }
 
@@ -676,6 +724,8 @@ pub extern "stdcall" fn WFSUnhookBlockingHook() -> HRESULT {
     trace!("WFSUnhookBlockingHook");
     assert_started!();
     assert_unblocked!();
+    let mut blocking_hook = xfs_unwrap!(BLOCKING_HOOK.lock());
+    *blocking_hook = None;
     WFS_SUCCESS
 }
 
@@ -684,8 +734,8 @@ pub extern "stdcall" fn WFSUnhookBlockingHook() -> HRESULT {
 pub extern "stdcall" fn WFSUnlock(hService: HSERVICE) -> HRESULT {
     trace!("WFSUnlock");
     assert_started!();
-    assert_unblocked!();
-    call_async(WFS_GETINFO_COMPLETE, |hwnd, request_id| WFSAsyncUnlock(hService, hwnd, request_id))
+    block_thread!();
+    call_async(WFS_GETINFO_COMPLETE, |hwnd, request_id| WFSAsyncUnlock(hService, hwnd, request_id), &mut ptr::null_mut())
 }
 
 #[allow(non_snake_case)]
@@ -809,12 +859,13 @@ pub extern "stdcall" fn WFMGetTraceLevel(hService: HSERVICE, lpdwTraceLevel: LPD
 pub extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
     let mut timers = xfs_unwrap!(TIMERS.lock());
 
-    if timers.get(wTimerID as usize - 1).is_none() {
-        return WFS_ERR_INVALID_TIMER;
-    }
+    let timer = match timers.get_mut(wTimerID as usize - 1) {
+        Some(Some(timer)) => timer,
+        _ => return WFS_ERR_INVALID_TIMER,
+    };
 
     unsafe {
-        if KillTimer(std::ptr::null_mut(), wTimerID as UINT_PTR) == 0 {
+        if KillTimer(std::ptr::null_mut(), timer.timer_id) == 0 {
             return WFS_ERR_INTERNAL_ERROR;
         }
     }
@@ -825,7 +876,8 @@ pub extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
 
 #[allow(non_snake_case)]
 #[no_mangle]
-pub extern "stdcall" fn WFMOutputTraceData(_lpszData: LPSTR) -> HRESULT {
+pub extern "stdcall" fn WFMOutputTraceData(lpszData: LPSTR) -> HRESULT {
+    trace!("WFMOutputTraceData: {}", xfs_unwrap!(unsafe { CStr::from_ptr(lpszData).to_str() }));
     WFS_SUCCESS
 }
 
@@ -850,31 +902,29 @@ pub extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTimeVal: DW
 
     let mut timers = xfs_unwrap!(TIMERS.lock());
 
-    let timer_id = match timers.iter().position(|t| t.is_none()) {
-        Some(id) => id + 1,
+    let free = match timers.iter().position(|t| t.is_none()) {
+        Some(index) => index,
         None => return WFS_ERR_INTERNAL_ERROR,
     };
+
+    let id_event = (&*timers) as *const _ as usize + free;
+    let timer_id = unsafe { SetTimer(hWnd, id_event, dwTimeVal, Some(timer_proc)) };
 
     let timer = Timer {
         hwnd: hWnd as ULONG_PTR,
         lpcontext: lpContext as ULONG_PTR,
+        timer_id,
     };
-
-    timers.insert(timer_id, Some(timer));
+    timers[free] = Some(timer);
 
     unsafe {
-        unsafe extern "system" fn timer_proc(_: HWND, _: UINT, id_event: UINT_PTR, _: DWORD) {
-            let timers = TIMERS.lock().unwrap(); // TODO: don't unwrap this shit, think of a better way to handle it?
-            if let Some(timer) = timers.get(id_event).and_then(|t| t.as_ref()) {
-                PostMessageA(timer.hwnd as HWND, WFS_TIMER_EVENT, id_event, timer.lpcontext as LPARAM);
-            }
-        }
+        *lpwTimerID = (free + 1) as u16;
+    }
 
-        if SetTimer(std::ptr::null_mut(), timer_id as UINT_PTR, dwTimeVal, Some(timer_proc)) == 0 {
-            timers.insert(timer_id, None);
-            return WFS_ERR_INTERNAL_ERROR;
-        }
-        *lpwTimerID = timer_id as u16;
+    unsafe extern "system" fn timer_proc(_: HWND, _: UINT, id_event: UINT_PTR, _: DWORD) {
+        let timers = TIMERS.lock().unwrap(); // TODO: don't unwrap this shit, think of a better way to handle it?
+        let timer = &timers[id_event as usize - (&*timers as *const _ as usize)].as_ref().unwrap();
+        PostMessageA(timer.hwnd as HWND, WFS_TIMER_EVENT, id_event, timer.lpcontext as LPARAM);
     }
 
     WFS_SUCCESS
@@ -891,21 +941,21 @@ pub extern "stdcall" fn WFMSetTraceLevel(hService: HSERVICE, dwTraceLevel: DWORD
     }
 
     let mut services = xfs_unwrap!(SERVICES.lock());
+    let service = match services.get_mut(hService as usize - 1).and_then(|service| service.as_mut()) {
+        Some(service) => service,
+        None => return WFS_ERR_INVALID_HSERVICE,
+    };
 
-    if let Some(service) = services.get_mut(hService as usize - 1).and_then(|service| service.as_mut()) {
-        service.trace_level = dwTraceLevel;
-        let wfp_set_trace_level = unsafe { xfs_unwrap!(service.library.get::<spi::WFPSetTraceLevel>(b"WFPSetTraceLevel")) };
-        return wfp_set_trace_level(hService, dwTraceLevel);
-    }
-
-    WFS_ERR_INVALID_HSERVICE
+    service.trace_level = dwTraceLevel;
+    let wfp_set_trace_level = unsafe { xfs_unwrap!(service.library.get::<spi::WFPSetTraceLevel>(b"WFPSetTraceLevel")) };
+    return wfp_set_trace_level(hService, dwTraceLevel);
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPVOID) -> bool {
     if fdw_reason == DLL_PROCESS_ATTACH {
-        let logfile = FileAppender::builder().build("xfs-mgr.log").unwrap();
+        let logfile = FileAppender::builder().build("C:\\XFS_MGR.txt").unwrap();
         let config = Config::builder()
             .appender(Appender::builder().build("logfile", Box::new(logfile)))
             .build(Root::builder().appender("logfile").build(LevelFilter::Trace))
@@ -917,7 +967,90 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
     true
 }
 
-fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT) -> HRESULT {
+/// Calls asynchronous function on the current thread.
+/// Within the XFS Manager, a blocking (synchronous) function is handled as follows:
+/// 1. The XFS Manager creates a transitory HWND on the calling thread to receive the completion message for
+/// the operation e.g. WFS_EXECUTE_COMPLETE.
+/// 2. The XFS Manager calls the Service Provider WFP API, passing the transitory HWND.
+/// 3. The XFS Manager waits for the completion message to be received. It does this by entering a loop
+/// equivalent to the following pseudo code, calling the current blocking hook (a Windows message dispatch
+/// routine) waiting for the completion message to be received from the Service Provider.
+/// ``` for(;;) {
+/// /* flush messages for good user response */
+/// for(;;) {
+/// BlockingHook();
+/// /* check for WFSCancelBlockingCall() */
+/// if ( operation_cancelled() )
+///  break;
+/// /* check to see if operation completed */
+/// if( operation_completed() )
+///  break; /* normal completion */
+/// }
+/// where the Default Blocking Hook is equivalent to:
+/// BOOL DefaultBlockingHook(void) {
+///  MSG msg = {0};
+///  BOOL ret = GetMessage(&msg, NULL, 0, 0);
+///  if( (int) ret != -1 ) {
+///  TranslateMessage(&msg);
+///  DispatchMessage(&msg);
+///  }
+///  /* FALSE if we got a WM_QUIT message */
+///  return( ret );
+/// }
+/// ```
+/// 4. On reception of the completion message, the XFS Manager exits the loop.
+/// 5. The XFS Manager destroys the transitory HWND.
+/// 6. The blocking operation completes. The blocking function return code is copied from the completion
+/// message lpWFSResult hResult field. If applicable, the lpWFSResult is also returned.
+///
+/// The thread, on which the blocking function has been called, is not permitted to issue any XFS calls other than the
+/// following two specific functions provided to assist the developer in this situation.
+///
+/// • WFSIsBlocking determines whether or not a blocking function is in progress.
+/// • WFSCancelBlockingCall cancels a blocking function in progress.
+///
+/// Any other XFS function, called from a thread with a blocking function in progress, will fail with the error
+/// WFS_ERR_OP_IN_PROGRESS.
+///
+/// Developers must be aware that WFSIsBlocking cannot simply be called in a loop waiting for the blocking function
+/// to complete. The application must allow the message handler to return to allow control to return to the blocking
+/// hook. Otherwise, the blocking function will not complete.
+/// Although this mechanism is sufficient for simple applications, it cannot support those applications which require
+/// more complex message processing while a blocking function is executing, such as processing messages relating to
+/// MDI (Multiple Document Interface) events, accelerator key translations, and modeless dialogs. For such
+/// applications, the XFS API includes the function WFSSetBlockingHook, which allows the developer to define a
+/// custom blocking hook which will be called instead of the default blocking hook described above. It is not intended
+/// as a mechanism for performing general application functions while blocked; it is still true that the only XFS
+/// functions that may be called from a blocking routine are WFSIsBlocking and WFSCancelBlockingCall. The
+/// asynchronous versions of the XFS functions must be used to allow an application to continue processing while an
+/// operation is in progress. Developers must be aware of their responsibility when replacing the default blocking hook.
+/// CWA 16926-1:2020 (E)
+/// 39
+/// The developer must ensure:
+///
+/// • All messages are processed in the order received. If not, the potential exists for the Service Provider to be
+/// blamed for sending messages in the wrong order e.g. a WFS_EXECUTE_EVENT message after a
+/// WFS_EXECUTE_COMPLETE.
+/// • All messages are processed. If not, the potential exists that the thread message queue will fill preventing
+/// other messages being added to the queue, including the Service Provider attempt to post the completion
+/// message being waited on.
+///
+/// The developer must be aware that replacing the default blocking hook impacts the process. The custom blocking
+/// hook will be called from every thread which makes use of XFS blocking functions.
+///
+/// In a multi-threaded environment, the developer of a multi-threaded application must be aware that it is the
+/// responsibility of the application, not the XFS Manager, to synchronize access to a service by multiple threads.
+/// Failure to synchronize calls to a service leads to unpredictable results; for example, if two threads "simultaneously"
+/// issue WFSExecute requests to send data to the same service, there is no guarantee as to the order in which the data
+/// is sent. This is true in general; the application is responsible for coordinating access by multiple threads to any
+/// object (e.g. other forms of I/O, such as file I/O), using appropriate synchronization mechanisms. The XFS Manager
+/// can not, and will not, address these issues. The possible consequences of failing to observe these rules are beyond
+/// the scope of this specification.
+///
+/// In order to allow maximum flexibility in the design and implementation of applications, especially in multithreaded environments, the concept of "application identity" can optionally be managed explicitly by the
+/// application developer using the concept of application handles. See Sections 4.5 and 4.8.2 for additional discussion
+/// of this concept.
+fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp_result: &mut LPWFSRESULT) -> HRESULT {
     let window = window::SyncWindow::new(message);
     let mut request_id = 0;
 
@@ -927,38 +1060,40 @@ fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT) -> 
         return result;
     }
 
-    let resultptr = xfs_unwrap!(window.wait());
-    let createstruct: *mut WFSRESULT = resultptr as *mut _;
-
-    unsafe { (*createstruct).hResult }
-}
-
-fn call_async_result(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp_result: &mut LPWFSRESULT) -> HRESULT {
-    let window = window::SyncWindow::new(message);
-    let mut request_id = 0;
-
-    let result = async_fn(window.handle(), &mut request_id);
-
-    if result != WFS_SUCCESS {
-        return result;
-    }
-
-    let resultptr = xfs_unwrap!(window.wait());
-    let createstruct: *mut WFSRESULT = resultptr as *mut _;
-    *lpp_result = createstruct;
-
-    unsafe { (*createstruct).hResult }
-}
-
-fn block() {
     loop {
-        unsafe {
-            let mut msg = mem::zeroed();
-            if GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) == 0 {
-                break;
+        // Execute application hook or default hook dispatching window messages
+        match *xfs_unwrap!(BLOCKING_HOOK.lock()) {
+            Some(hook) => {
+                hook();
             }
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            None => unsafe {
+                default_block_hook();
+            },
         }
+
+        let thread_id = unsafe { GetCurrentThreadId() };
+        let mut blocked_threads = xfs_unwrap!(BLOCKED_THREADS.lock());
+
+        // Check if the call was cancelled
+        if blocked_threads.get(&thread_id).unwrap_or(&false) == &true {
+            blocked_threads.remove(&thread_id); // cleanup
+            return WFS_ERR_CANCELED;
+        }
+
+        // Check if we received result from the async call
+        if let Some(resultptr) = xfs_unwrap!(window.try_receive()) {
+            let createstruct: *mut WFSRESULT = resultptr as *mut _;
+            *lpp_result = createstruct;
+            return unsafe { (*createstruct).hResult };
+        }
+    }
+}
+
+/// Default blocking hook for synchronous calls
+unsafe fn default_block_hook() {
+    let mut msg = mem::zeroed();
+    if GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) != 0 {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
 }
