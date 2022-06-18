@@ -1,5 +1,5 @@
 [package]
-name = "msxfs"
+name = "xfs_supp"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,10 +8,9 @@ edition = "2021"
 [dependencies]
 xfslib = { path = "../xfslib" }
 winapi = { version = "0.3", features = ["everything"] }
-libloading = "0.7"
+lazy_static = "1.4.0"
 log = "0.4"
 log4rs = "1.1"
-lazy_static = "1.4.0"
 log-derive = "*"
 
 [lib]

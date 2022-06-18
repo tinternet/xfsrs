@@ -1,5 +1,5 @@
 [package]
-name = "msxfs"
+name = "xfs_supp_proxy"
 version = "0.1.0"
 edition = "2021"
 
