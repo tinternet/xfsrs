@@ -137,8 +137,9 @@ struct Service {
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSCancelAsyncRequest(hService: HSERVICE, RequestID: REQUESTID) -> HRESULT {
-    trace!("WFSCancelAsyncRequest");
     assert_started!();
     assert_unblocked!();
 
@@ -162,8 +163,9 @@ pub extern "stdcall" fn WFSCancelAsyncRequest(hService: HSERVICE, RequestID: REQ
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT {
-    trace!("WFSCancelBlockingCall");
     assert_started!();
 
     let thread_id = match dwThreadID {
@@ -183,8 +185,9 @@ pub extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT {
 // TODO: Close service providers
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
-    trace!("WFSCleanUp");
     assert_unblocked!();
 
     {
@@ -221,8 +224,9 @@ pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSClose(hService: HSERVICE) -> HRESULT {
-    trace!("WFSClose");
     assert_started!();
     block_thread!();
     call_async(WFS_CLOSE_COMPLETE, |hwnd, reqid| WFSAsyncClose(hService, hwnd, reqid), &mut ptr::null_mut())
@@ -230,8 +234,9 @@ pub extern "stdcall" fn WFSClose(hService: HSERVICE) -> HRESULT {
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSAsyncClose(hService: HSERVICE, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
-    trace!("WFSAsyncClose");
     assert_started!();
     assert_unblocked!();
 
@@ -262,8 +267,9 @@ pub extern "stdcall" fn WFSAsyncClose(hService: HSERVICE, hWnd: HWND, lpRequestI
 /// thus making it unique for each application process and/or thread.
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSCreateAppHandle(lphApp: LPHAPP) -> HRESULT {
-    trace!("WFSCreateAppHandle");
     assert_started!();
     assert_unblocked!();
 
@@ -289,8 +295,9 @@ pub extern "stdcall" fn WFSCreateAppHandle(lphApp: LPHAPP) -> HRESULT {
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSDeregister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
-    trace!("WFSDeregister");
     assert_started!();
     block_thread!();
     call_async(
@@ -302,8 +309,9 @@ pub extern "stdcall" fn WFSDeregister(hService: HSERVICE, dwEventClass: DWORD, h
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSAsyncDeregister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
-    trace!("WFSAsyncDeregister");
     assert_started!();
     assert_unblocked!();
 
@@ -325,8 +333,9 @@ pub extern "stdcall" fn WFSAsyncDeregister(hService: HSERVICE, dwEventClass: DWO
 /// WFSCreateAppHandle and Sections 4.5 and 4.8.2 for additional discussion.
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSDestroyAppHandle(hApp: HAPP) -> HRESULT {
-    trace!("WFSDestroyAppHandle");
     assert_started!();
     assert_unblocked!();
 
@@ -348,8 +357,9 @@ pub extern "stdcall" fn WFSDestroyAppHandle(hApp: HAPP) -> HRESULT {
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSExecute(hService: HSERVICE, dwCommandd: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
-    trace!("WFSExecute");
     assert_started!();
     block_thread!();
     call_async(
@@ -361,8 +371,9 @@ pub extern "stdcall" fn WFSExecute(hService: HSERVICE, dwCommandd: DWORD, lpCmdD
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSAsyncExecute(hService: HSERVICE, dwCommand: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
-    trace!("WFSAsyncExecute");
     assert_started!();
     assert_unblocked!();
 
@@ -379,6 +390,8 @@ pub extern "stdcall" fn WFSAsyncExecute(hService: HSERVICE, dwCommand: DWORD, lp
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSFreeResult(lpResult: LPWFSRESULT) -> HRESULT {
     assert_started!();
     assert_unblocked!();
@@ -387,8 +400,9 @@ pub extern "stdcall" fn WFSFreeResult(lpResult: LPWFSRESULT) -> HRESULT {
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQueryDetails: LPVOID, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
-    trace!("WFSGetInfo");
     assert_started!();
     block_thread!();
     call_async(
@@ -400,8 +414,9 @@ pub extern "stdcall" fn WFSGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQuer
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSAsyncGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQueryDetails: LPVOID, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
-    trace!("WFSAsyncGetInfo");
     assert_started!();
     assert_unblocked!();
 
@@ -418,16 +433,18 @@ pub extern "stdcall" fn WFSAsyncGetInfo(hService: HSERVICE, dwCategory: DWORD, l
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSIsBlocking() -> bool {
-    trace!("WFSIsBlocking");
     let thread_id = unsafe { GetCurrentThreadId() };
     BLOCKED_THREADS.lock().unwrap().contains_key(&thread_id)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSLock(hService: HSERVICE, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
-    trace!("WFSLock");
     assert_started!();
     block_thread!();
     call_async(WFS_LOCK_COMPLETE, |hwnd, request_id| WFSAsyncLock(hService, dwTimeOut, hwnd, request_id), lppResult)
@@ -435,8 +452,9 @@ pub extern "stdcall" fn WFSLock(hService: HSERVICE, dwTimeOut: DWORD, lppResult:
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSAsyncLock(hService: HSERVICE, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
-    trace!("WFSAsyncLock");
     assert_started!();
     assert_unblocked!();
 
@@ -457,6 +475,8 @@ pub extern "stdcall" fn WFSAsyncLock(hService: HSERVICE, dwTimeOut: DWORD, hWnd:
 /// requested through a WFSGetInfo command.
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSOpen(
     lpszLogicalName: LPSTR,
     hApp: HAPP,
@@ -468,7 +488,6 @@ pub extern "stdcall" fn WFSOpen(
     lpSPIVersion: LPWFSVERSION,
     lphService: LPHSERVICE,
 ) -> HRESULT {
-    trace!("WFSOpen");
     assert_started!();
     block_thread!();
 
@@ -516,12 +535,12 @@ pub extern "stdcall" fn WFSAsyncOpen(
     assert_started!();
     assert_unblocked!();
 
-    unsafe {
-        trace!("OPENING DEVICE: {}", CStr::from_ptr(lpszLogicalName).to_str().unwrap());
+    if lpszLogicalName.is_null() || lpSrvcVersion.is_null() || lpSPIVersion.is_null() {
+        xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
-    // if lpszLogicalName.is_null() || lpszAppID.is_null() || lphService.is_null() || lpSrvcVersion.is_null() || lpSPIVersion.is_null() {
-    //     return WFS_ERR_INVALID_POINTER;
-    // }
+    unsafe {
+        trace!("OPENING DEVICE: {}", xfs_unwrap!(CStr::from_ptr(lpszLogicalName).to_str()));
+    }
 
     unsafe {
         *lphService = 0;
@@ -548,7 +567,6 @@ pub extern "stdcall" fn WFSAsyncOpen(
 
         let lpszLogicalName = xfs_unwrap!(CStr::from_ptr(lpszLogicalName).to_str());
         let path = xfs_unwrap!(CString::new(format!("LOGICAL_SERVICES\\{}", lpszLogicalName)));
-        trace!("WFSOpen: path: {:?}", path);
 
         if WFM_OPEN_KEY(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut lgl_key) != WFS_SUCCESS {
             xfs_reject!(WFS_ERR_INVALID_SERVPROV);
@@ -571,13 +589,9 @@ pub extern "stdcall" fn WFSAsyncOpen(
         let mut phy_key: HKEY = ptr::null_mut();
 
         let lgl_prov_path = &lgl_prov_path[..*lgl_prov_len as usize];
-        trace!("WFSOpen: lgl_prov_path: {:?}", lgl_prov_path);
 
         let lgl_prov_path = xfs_unwrap!(std::str::from_utf8(lgl_prov_path));
-        trace!("WFSOpen: lgl_prov_path: {:?}", lgl_prov_path);
         let path = xfs_unwrap!(CString::new(format!("SERVICE_PROVIDERS\\{}", lgl_prov_path)));
-
-        trace!("OPENING {}", path.to_str().unwrap());
 
         if WFM_OPEN_KEY(WFS_CFG_HKEY_MACHINE_XFS_ROOT, path.as_ptr() as *mut i8, &mut phy_key) != WFS_SUCCESS {
             xfs_reject!(WFS_ERR_INVALID_SERVPROV);
@@ -594,10 +608,7 @@ pub extern "stdcall" fn WFSAsyncOpen(
     }
 
     let phy_prov_path = &phy_prov_path[..*phy_prov_len as usize];
-    trace!("WFSOpen: phy_prov_path: {:?}", phy_prov_path);
     let phy_prov_path = xfs_unwrap!(std::str::from_utf8(phy_prov_path));
-
-    trace!("WFSOpen: phy_prov_path: {:?}", phy_prov_path);
     let library = unsafe { xfs_unwrap!(libloading::Library::new(phy_prov_path)) };
 
     let mut services = xfs_unwrap!(SERVICES.lock());
@@ -626,7 +637,6 @@ pub extern "stdcall" fn WFSAsyncOpen(
     unsafe {
         let wfp_open = xfs_unwrap!(service.library.get::<spi::WfpOpen>(b"WFPOpen"));
 
-        trace!("WFSOpen: calling spi::WfpOpen");
         wfp_open(
             *lphService,
             lpszLogicalName,
@@ -649,8 +659,9 @@ pub extern "stdcall" fn WFSAsyncOpen(
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
-    trace!("WFSRegister");
     assert_started!();
     block_thread!();
     call_async(
@@ -662,8 +673,9 @@ pub extern "stdcall" fn WFSRegister(hService: HSERVICE, dwEventClass: DWORD, hWn
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
-    trace!("WFSAsyncRegister");
     assert_started!();
     assert_unblocked!();
 
@@ -680,8 +692,9 @@ pub extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrevFunc: LPXFSBLOCKINGHOOK) -> HRESULT {
-    trace!("WFSSetBlockingHook");
     assert_started!();
     assert_unblocked!();
 
@@ -746,8 +759,9 @@ pub extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWF
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSUnhookBlockingHook() -> HRESULT {
-    trace!("WFSUnhookBlockingHook");
     assert_started!();
     assert_unblocked!();
     let mut blocking_hook = xfs_unwrap!(BLOCKING_HOOK.lock());
@@ -757,8 +771,9 @@ pub extern "stdcall" fn WFSUnhookBlockingHook() -> HRESULT {
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSUnlock(hService: HSERVICE) -> HRESULT {
-    trace!("WFSUnlock");
     assert_started!();
     block_thread!();
     call_async(WFS_GETINFO_COMPLETE, |hwnd, request_id| WFSAsyncUnlock(hService, hwnd, request_id), &mut ptr::null_mut())
@@ -766,8 +781,9 @@ pub extern "stdcall" fn WFSUnlock(hService: HSERVICE) -> HRESULT {
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSAsyncUnlock(hService: HSERVICE, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
-    trace!("WFSAsyncUnlock");
     assert_started!();
     assert_unblocked!();
 
@@ -784,8 +800,9 @@ pub extern "stdcall" fn WFSAsyncUnlock(hService: HSERVICE, hWnd: HWND, lpRequest
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMGetTraceLevel(hService: HSERVICE, lpdwTraceLevel: LPDWORD) -> HRESULT {
-    trace!("WFMGetTraceLevel");
     assert_started!();
 
     let services = xfs_unwrap!(SERVICES.lock());
@@ -802,30 +819,44 @@ pub extern "stdcall" fn WFMGetTraceLevel(hService: HSERVICE, lpdwTraceLevel: LPD
 
 #[allow(non_snake_case)]
 #[no_mangle]
-pub extern "stdcall" fn WFMReleaseDLL(_hProvider: HPROVIDER) -> HRESULT {
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
+pub extern "stdcall" fn WFMReleaseDLL(hProvider: HPROVIDER) -> HRESULT {
+    let mut services = xfs_unwrap!(SERVICES.lock());
+    let service_handle = (&*services) as *const _ as usize;
+    let index = hProvider as usize - service_handle;
+    services[index] = None;
     WFS_SUCCESS
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvData: *mut LPVOID) -> HRESULT {
     (WFM_ALLOCATE_BUFFER)(ulSize, ulFlags, lppvData)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppvData: *mut LPVOID) -> HRESULT {
     (WFM_ALLOCATE_MORE)(ulSize, lpvOriginal, lppvData)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
     (WFM_FREE_BUFFER)(lpvData)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
     (WFM_KILL_TIMER)(wTimerID)
 }
@@ -839,6 +870,8 @@ pub extern "stdcall" fn WFMOutputTraceData(lpszData: LPSTR) -> HRESULT {
 
 #[allow(non_snake_case)]
 #[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTimeVal: DWORD, lpwTimerID: LPWORD) -> HRESULT {
     (WFM_SET_TIMER)(hWnd, lpContext, dwTimeVal, lpwTimerID)
 }
@@ -848,7 +881,6 @@ pub unsafe extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTime
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMSetTraceLevel(hService: HSERVICE, dwTraceLevel: DWORD) -> HRESULT {
-    trace!("WFMSetTraceLevel");
     assert_started!();
 
     if hService == 0 {

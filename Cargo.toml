@@ -3,6 +3,7 @@
 members = [
     "xfslib",
     "xfs_conf",
+    "xfs_conf_proxy",
     "xfs_supp",
     "xfs_supp_proxy",
     "xfs_mgr",

@@ -81,7 +81,6 @@ pub extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvDat
     }
 
     buffers.insert(buffer.as_ptr() as ULONG_PTR, Buffer { buffer, children: vec![] });
-
     WFS_SUCCESS
 }
 
@@ -107,7 +106,6 @@ pub extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppv
     }
 
     original_buffer.children.push(buffer);
-
     WFS_SUCCESS
 }
 
@@ -122,12 +120,9 @@ pub extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
 
     let mut buffers = xfs_unwrap!(BUFFERS.lock());
 
-    if !buffers.contains_key(&(lpvData as ULONG_PTR)) {
+    if buffers.remove(&(lpvData as ULONG_PTR)).is_none() {
         xfs_reject!(WFS_ERR_INVALID_BUFFER);
     }
-
-    buffers.remove(&(lpvData as ULONG_PTR));
-
     WFS_SUCCESS
 }
 
@@ -158,7 +153,7 @@ pub extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMOutputTraceData(lpszData: LPSTR) -> HRESULT {
-    trace!("WFMOutputTraceData: {}", xfs_unwrap!(unsafe { CStr::from_ptr(lpszData).to_str() }));
+    trace!("XFS TRACE --- {}", xfs_unwrap!(unsafe { CStr::from_ptr(lpszData).to_str() }));
     WFS_SUCCESS
 }
 

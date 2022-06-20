@@ -1,8 +1,7 @@
 use std::{ffi::CString, ptr};
 
-use lazy_static::lazy_static;
 use libloading::Symbol;
-use log::{trace, LevelFilter};
+use log::LevelFilter;
 use log4rs::{
     append::file::FileAppender,
     config::{Appender, Root},
@@ -19,7 +18,7 @@ use winapi::{
 };
 use xfslib::*;
 
-#[allow(non_snake_case)]
+#[allow(non_snake_case, dead_code)]
 struct XFSApi<'a> {
     WFSCancelAsyncRequest: Symbol<'a, unsafe extern "stdcall" fn(HSERVICE, REQUESTID) -> HRESULT>,
     WFSCancelBlockingCall: Symbol<'a, unsafe extern "stdcall" fn(DWORD) -> HRESULT>,
@@ -72,6 +71,7 @@ fn main() {
     init_log();
     unsafe {
         test_buffers();
+        test();
     }
 }
 
