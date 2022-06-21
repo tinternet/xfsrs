@@ -1,9 +1,9 @@
 use std::{
-    ffi::{CStr, CString},
+    ffi::{c_void, CStr, CString},
     ptr,
 };
 
-use log::{error, trace, LevelFilter};
+use log::{debug, error, trace, LevelFilter};
 use log4rs::{
     append::file::FileAppender,
     config::{Appender, Root},
@@ -19,8 +19,8 @@ use winapi::{
     um::{
         winnt::{DLL_PROCESS_ATTACH, KEY_ALL_ACCESS, LPSTR, REG_CREATED_NEW_KEY, REG_OPENED_EXISTING_KEY, REG_OPTION_NON_VOLATILE, REG_SZ},
         winreg::{
-            RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegGetValueA, RegOpenKeyA, RegQueryValueA, RegSetValueExA, HKEY_CLASSES_ROOT,
-            HKEY_LOCAL_MACHINE, HKEY_USERS, RRF_RT_ANY,
+            RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegGetValueA, RegOpenKeyA, RegQueryValueA, RegQueryValueExA, RegSetValueExA,
+            HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE, HKEY_USERS, RRF_RT_ANY,
         },
     },
 };
@@ -171,13 +171,6 @@ pub unsafe extern "stdcall" fn WFMEnumValue(hKey: HKEY, iValue: DWORD, lpszValue
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    for i in 0..*lpcchValue {
-        *lpszValue.add(i as usize) = 0;
-    }
-    for i in 0..*lpcchData {
-        *lpszData.add(i as usize) = 0;
-    }
-
     let result = match RegEnumValueA(hKey, iValue, lpszValue, lpcchValue, ptr::null_mut(), ptr::null_mut(), lpszData as *mut u8, lpcchData) as u32 {
         ERROR_SUCCESS => WFS_SUCCESS,
         ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
@@ -187,14 +180,8 @@ pub unsafe extern "stdcall" fn WFMEnumValue(hKey: HKEY, iValue: DWORD, lpszValue
         _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
     };
 
-    // Exclude null termination if any
-    if result == WFS_SUCCESS {
-        let mut counter = 0;
-        while counter <= *lpcchData && *lpszData.add(counter as usize) != 0 {
-            counter += 1;
-        }
-        *lpcchData = counter;
-    }
+    // Diebold xfs simply decreases by 1 even if there was an error
+    *lpcchData = *lpcchData - 1;
 
     result
 }
@@ -235,26 +222,16 @@ pub unsafe extern "stdcall" fn WFMQueryValue(hKey: HKEY, lpszValueName: LPSTR, l
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    for i in 0..*lpcchData {
-        *lpszData.add(i as usize) = 0;
-    }
-
-    let result = match RegGetValueA(hKey, std::ptr::null_mut(), lpszValueName, RRF_RT_ANY, std::ptr::null_mut(), lpszData as *mut _, lpcchData) as u32 {
+    let result = match RegGetValueA(hKey, std::ptr::null_mut(), lpszValueName, RRF_RT_ANY, std::ptr::null_mut(), lpszData as *mut c_void, lpcchData) as u32 {
         ERROR_SUCCESS => WFS_SUCCESS,
-        ERROR_FILE_NOT_FOUND => WFS_ERR_CFG_INVALID_HKEY,
-        ERROR_PATH_NOT_FOUND => WFS_ERR_CFG_INVALID_NAME,
+        ERROR_FILE_NOT_FOUND => WFS_ERR_CFG_INVALID_NAME,
+        ERROR_PATH_NOT_FOUND => WFS_ERR_CFG_INVALID_HKEY,
         ERROR_MORE_DATA => WFS_ERR_CFG_VALUE_TOO_LONG,
         _ => WFS_ERR_INTERNAL_ERROR,
     };
 
-    if result == WFS_SUCCESS {
-        let mut counter = 0;
-        while counter <= *lpcchData && *lpszData.add(counter as usize) != 0 {
-            counter += 1;
-        }
-        *lpcchData = counter;
-    }
-
+    // Diebold xfs simply decreases by 1 even if there was an error
+    *lpcchData = *lpcchData - 1;
     result
 }
 
@@ -337,14 +314,6 @@ mod tests {
                 let str = std::str::from_utf8(&lgl_prov_path[..*len as usize]).unwrap();
                 assert_eq!(str, "serviceprovider");
             }
-            // let result = WFMCloseKey(lgl_key);
-            // assert_eq!(result, 0);
-
-            // let mut lgl_key: HKEY = ptr::null_mut();
-
-            // let path = CString::new("SERVICE_PROVIDERS\\serviceprovider").unwrap();
-            // let result = WFMOpenKey(WFS_CFG_HKEY_MACHINE_XFS_ROOT, path.as_ptr() as *mut i8, &mut lgl_key);
-            // assert_eq!(result, 0);
         }
     }
 }

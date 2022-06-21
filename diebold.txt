@@ -1,0 +1,3 @@
+sc create DieboldTPM binPath="C:\Program Files (x86)\Diebold\Agilis TPM Utilities\TpmService.exe"
+sc create DieboldDev binPath="C:\Program Files (x86)\Diebold\AMI\DbdDevService.exe"
+sc create DieboldSpi binPath="C:\Program Files (x86)\Diebold\AgilisXFS\bin\SpiService.exe"

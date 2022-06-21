@@ -130,9 +130,16 @@ macro_rules! get_service_req {
 }
 
 struct Service {
+    service_id: HSERVICE,
     request_id: u32,
     library: libloading::Library,
     trace_level: DWORD,
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        WFSClose(self.service_id);
+    }
 }
 
 #[allow(non_snake_case)]
@@ -194,9 +201,6 @@ pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
         let mut services = xfs_unwrap!(SERVICES.lock());
         *services = (0..8192).map(|_| None).collect();
     }
-
-    // let mut timers = xfs_unwrap!(TIMERS.lock());
-    // *timers = (0..65535).map(|_| None).collect();
 
     {
         let mut handles = xfs_unwrap!(APP_HANDLES.lock());
@@ -533,7 +537,7 @@ pub extern "stdcall" fn WFSAsyncOpen(
     lpRequestID: LPREQUESTID,
 ) -> HRESULT {
     assert_started!();
-    assert_unblocked!();
+    // assert_unblocked!();
 
     if lpszLogicalName.is_null() || lpSrvcVersion.is_null() || lpSPIVersion.is_null() {
         xfs_reject!(WFS_ERR_INVALID_POINTER);
@@ -559,66 +563,59 @@ pub extern "stdcall" fn WFSAsyncOpen(
         (*lpSPIVersion).sz_system_status = [0; WFSDDESCRIPTION_LEN + 1];
     }
 
-    let mut lgl_prov_path: [u8; MAX_PATH] = [0; MAX_PATH]; // Change size as needed.
-    let lgl_prov_len = &mut (MAX_PATH as u32);
+    fn get_value(root: HKEY, path: CString, value: CString) -> Result<String, HRESULT> {
+        let mut key = ptr::null_mut();
 
-    unsafe {
-        let mut lgl_key: HKEY = ptr::null_mut();
-
-        let lpszLogicalName = xfs_unwrap!(CStr::from_ptr(lpszLogicalName).to_str());
-        let path = xfs_unwrap!(CString::new(format!("LOGICAL_SERVICES\\{}", lpszLogicalName)));
-
-        if WFM_OPEN_KEY(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut lgl_key) != WFS_SUCCESS {
-            xfs_reject!(WFS_ERR_INVALID_SERVPROV);
+        if unsafe { WFM_OPEN_KEY(root, path.as_ptr() as *mut i8, &mut key) } != WFS_SUCCESS {
+            return Err(WFS_ERR_INVALID_SERVPROV);
         }
 
-        let name = xfs_unwrap!(CString::new("provider"));
+        let value_buffer = [0; MAX_PATH];
+        let value_len = &mut (MAX_PATH as u32);
 
-        if WFM_QUERY_VALUE(lgl_key, name.as_ptr() as *mut i8, lgl_prov_path.as_mut_ptr() as *mut i8, lgl_prov_len) != WFS_SUCCESS {
-            WFM_CLOSE_KEY(lgl_key);
-            xfs_reject!(WFS_ERR_INVALID_SERVPROV);
+        if unsafe { WFM_QUERY_VALUE(key, value.as_ptr() as *mut i8, value_buffer.as_ptr() as *mut i8, value_len) } != WFS_SUCCESS {
+            unsafe {
+                WFM_CLOSE_KEY(key);
+            }
+            return Err(WFS_ERR_INVALID_SERVPROV);
+        }
+        unsafe {
+            WFM_CLOSE_KEY(key);
         }
 
-        WFM_CLOSE_KEY(lgl_key);
+        match std::str::from_utf8(&value_buffer[..*value_len as usize]) {
+            Ok(s) => Ok(s.to_string()),
+            Err(error) => {
+                error!("{}", error);
+                Err(WFS_ERR_INTERNAL_ERROR)
+            }
+        }
     }
 
-    let mut phy_prov_path: [u8; MAX_PATH] = [0; MAX_PATH]; // Change size as needed.
-    let phy_prov_len = &mut (MAX_PATH as u32);
+    let logical_name = xfs_unwrap!(unsafe { CStr::from_ptr(lpszLogicalName) }.to_str());
+    let path = xfs_unwrap!(CString::new(format!("LOGICAL_SERVICES\\{}", logical_name)));
+    let lgl_prov_path = match get_value(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path, xfs_unwrap!(CString::new("provider"))) {
+        Ok(lgl_prov_path) => lgl_prov_path,
+        Err(error) => xfs_reject!(error),
+    };
 
-    unsafe {
-        let mut phy_key: HKEY = ptr::null_mut();
+    let path = xfs_unwrap!(CString::new(format!("SERVICE_PROVIDERS\\{}", lgl_prov_path)));
+    let phy_prov_path = match get_value(WFS_CFG_HKEY_MACHINE_XFS_ROOT, path, xfs_unwrap!(CString::new("dllname"))) {
+        Ok(phy_prov_path) => phy_prov_path,
+        Err(error) => xfs_reject!(error),
+    };
 
-        let lgl_prov_path = &lgl_prov_path[..*lgl_prov_len as usize];
-
-        let lgl_prov_path = xfs_unwrap!(std::str::from_utf8(lgl_prov_path));
-        let path = xfs_unwrap!(CString::new(format!("SERVICE_PROVIDERS\\{}", lgl_prov_path)));
-
-        if WFM_OPEN_KEY(WFS_CFG_HKEY_MACHINE_XFS_ROOT, path.as_ptr() as *mut i8, &mut phy_key) != WFS_SUCCESS {
-            xfs_reject!(WFS_ERR_INVALID_SERVPROV);
-        }
-
-        let name = xfs_unwrap!(CString::new("dllname"));
-
-        if WFM_QUERY_VALUE(phy_key, name.as_ptr() as *mut i8, phy_prov_path.as_mut_ptr() as *mut i8, phy_prov_len) != WFS_SUCCESS {
-            WFM_CLOSE_KEY(phy_key);
-            xfs_reject!(WFS_ERR_INVALID_SERVPROV);
-        }
-
-        WFM_CLOSE_KEY(phy_key);
-    }
-
-    let phy_prov_path = &phy_prov_path[..*phy_prov_len as usize];
-    let phy_prov_path = xfs_unwrap!(std::str::from_utf8(phy_prov_path));
+    trace!("PHYSICAL_PROVIDER: {}", phy_prov_path);
     let library = unsafe { xfs_unwrap!(libloading::Library::new(phy_prov_path)) };
 
     let mut services = xfs_unwrap!(SERVICES.lock());
-
     let service_index = match services.iter().position(|s| s.is_none()) {
         Some(index) => index,
         None => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
     };
 
     services[service_index] = Some(Service {
+        service_id: service_index as u16 + 1,
         library,
         request_id: 1,
         trace_level: dwTraceLevel,
@@ -631,7 +628,6 @@ pub extern "stdcall" fn WFSAsyncOpen(
 
     let service_handle = (&*services) as *const _ as HPROVIDER;
     let service_handle = unsafe { service_handle.add(service_index) };
-
     let service = services[service_index].as_ref().unwrap();
 
     unsafe {

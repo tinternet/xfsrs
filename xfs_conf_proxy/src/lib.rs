@@ -4,13 +4,13 @@ use std::{collections::HashMap, sync::Mutex};
 
 use lazy_static::lazy_static;
 use libloading::Symbol;
-use log::{error, trace, LevelFilter};
+use log::{debug, error, info, trace, LevelFilter};
 use log4rs::append::file::FileAppender;
 use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log4rs::Config;
 use log_derive::{logfn, logfn_inputs};
-use winapi::shared::minwindef::BYTE;
+use winapi::shared::minwindef::{BYTE, MAX_PATH};
 use winapi::shared::winerror::{ERROR_FILE_NOT_FOUND, ERROR_KEY_HAS_CHILDREN, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS};
 use winapi::shared::{
     minwindef::{DWORD, HKEY, LPDWORD, PFILETIME, PHKEY},
@@ -19,7 +19,8 @@ use winapi::shared::{
 };
 use winapi::um::winnt::{KEY_ALL_ACCESS, REG_CREATED_NEW_KEY, REG_OPENED_EXISTING_KEY, REG_OPTION_NON_VOLATILE, REG_SZ};
 use winapi::um::winreg::{
-    RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegOpenKeyA, RegQueryValueA, RegSetValueExA, HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE, HKEY_USERS,
+    RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegGetValueA, RegOpenKeyA, RegQueryValueA, RegSetValueExA, HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE,
+    HKEY_USERS, RRF_RT_ANY,
 };
 use winapi::{
     shared::{
@@ -57,15 +58,9 @@ macro_rules! xfs_reject {
 
 lazy_static! {
     static ref XFS_LIB: libloading::Library = unsafe { libloading::Library::new("xfs_conf_orig.dll").unwrap() };
-    pub static ref WFM_CLOSE_KEY: Symbol<'static, unsafe extern "stdcall" fn(HKEY) -> HRESULT> = unsafe { XFS_LIB.get(b"WFMCloseKey").unwrap() };
-    pub static ref WFM_CREATE_KEY: Symbol<'static, unsafe extern "stdcall" fn(HKEY, LPSTR, PHKEY, LPDWORD) -> HRESULT> = unsafe { XFS_LIB.get(b"WFMCreateKey").unwrap() };
-    pub static ref WFM_DELETE_KEY: Symbol<'static, unsafe extern "stdcall" fn(HKEY, LPSTR) -> HRESULT> = unsafe { XFS_LIB.get(b"WFMDeleteKey").unwrap() };
-    pub static ref WFM_DELETE_VALUE: Symbol<'static, unsafe extern "stdcall" fn(HKEY, LPSTR) -> HRESULT> = unsafe { XFS_LIB.get(b"WFMDeleteValue").unwrap() };
-    pub static ref WFM_ENUM_KEY: Symbol<'static, unsafe extern "stdcall" fn(HKEY, DWORD, LPSTR, LPDWORD, PFILETIME) -> HRESULT> = unsafe { XFS_LIB.get(b"WFMEnumKey").unwrap() };
-    pub static ref WFM_ENUM_VALUE: Symbol<'static, unsafe extern "stdcall" fn(HKEY, DWORD, LPSTR, LPDWORD, LPSTR, LPDWORD) -> HRESULT> = unsafe { XFS_LIB.get(b"WFMEnumValue").unwrap() };
-    pub static ref WFM_OPEN_KEY: Symbol<'static, unsafe extern "stdcall" fn(HKEY, LPSTR, PHKEY) -> HRESULT> = unsafe { XFS_LIB.get(b"WFMOpenKey").unwrap() };
     pub static ref WFM_QUERY_VALUE: Symbol<'static, unsafe extern "stdcall" fn(HKEY, LPSTR, LPSTR, LPDWORD) -> HRESULT> = unsafe { XFS_LIB.get(b"WFMQueryValue").unwrap() };
-    pub static ref WFM_SET_VALUE: Symbol<'static, unsafe extern "stdcall" fn(HKEY, LPSTR, LPSTR, DWORD) -> HRESULT> = unsafe { XFS_LIB.get(b"WFMSetValue").unwrap() };
+    static ref XFS_LIB_MY: libloading::Library = unsafe { libloading::Library::new("xfs_conf_my.dll").unwrap() };
+    pub static ref WFM_QUERY_VALUE_MY: Symbol<'static, unsafe extern "stdcall" fn(HKEY, LPSTR, LPSTR, LPDWORD) -> HRESULT> = unsafe { XFS_LIB_MY.get(b"WFMQueryValue").unwrap() };
 }
 
 #[allow(non_snake_case)]
@@ -252,32 +247,30 @@ pub unsafe extern "stdcall" fn WFMOpenKey(hKey: HKEY, lpszSubKey: LPSTR, phkResu
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMQueryValue(hKey: HKEY, lpszValueName: LPSTR, lpszData: LPSTR, lpcchData: LPDWORD) -> HRESULT {
-    // (WFM_QUERY_VALUE)(hKey, lpszValueName, lpszData, lpcchData)
+    let mut data1 = [0; MAX_PATH];
+    let len1 = &mut (MAX_PATH as u32);
+    let result = (WFM_QUERY_VALUE)(hKey, lpszValueName, data1.as_mut_ptr(), len1);
 
-    // if lpszValueName.is_null() || lpcchData.is_null() || ((*lpcchData > 0) && lpszData.is_null()) {
-    //     xfs_reject!(WFS_ERR_INVALID_POINTER);
-    // }
+    let mut data2 = [0; MAX_PATH];
+    let len2 = &mut (MAX_PATH as u32);
+    let result2 = (WFM_QUERY_VALUE_MY)(hKey, lpszValueName, data2.as_mut_ptr(), len2);
 
-    // for i in 0..*lpcchData {
-    //     *lpszData.add(i as usize) = 0;
-    // }
+    info!("CHECKING");
 
-    let result = match RegQueryValueA(hKey, lpszValueName, lpszData as *mut _, lpcchData as *mut _) as u32 {
-        ERROR_SUCCESS => WFS_SUCCESS,
-        ERROR_FILE_NOT_FOUND => WFS_ERR_CFG_INVALID_HKEY,
-        ERROR_PATH_NOT_FOUND => WFS_ERR_CFG_INVALID_NAME,
-        ERROR_MORE_DATA => WFS_ERR_CFG_VALUE_TOO_LONG,
-        _ => WFS_ERR_INTERNAL_ERROR,
-    };
-
-    // Exclude null termination if any
-    if result == WFS_SUCCESS {
-        if *lpszData.add(*lpcchData as usize) == 0 {
-            *lpcchData = *lpcchData - 1;
-        }
+    if result != result2 {
+        debug!("WFMQueryValue: result != result2");
     }
 
-    result
+    if len1 != len2 {
+        debug!("WFMQueryValue: their: {:?}, mine: {:?}", data1, data2);
+        debug!("WFMQueryValue: {} {}", len1, len2);
+    }
+
+    if data1 != data2 {
+        debug!("WFMQueryValue: their: {:?}, mine: {:?}", data1, data2);
+    }
+
+    (WFM_QUERY_VALUE_MY)(hKey, lpszValueName, lpszData, lpcchData)
 }
 
 #[allow(non_snake_case)]

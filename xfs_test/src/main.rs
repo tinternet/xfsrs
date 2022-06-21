@@ -69,9 +69,13 @@ fn init_log() {
 
 fn main() {
     init_log();
+    let s: &str = "123";
+    let ptr: *const u8 = s.as_ptr();
+
     unsafe {
-        test_buffers();
-        test();
+        println!("{}", *ptr.add(1) as char);
+        println!("{}", *ptr.add(2) as char);
+        println!("{}", *ptr as char);
     }
 }
 
