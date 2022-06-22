@@ -77,7 +77,7 @@ pub extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvDat
     let buffer: Vec<BYTE> = vec![0; ulSize as usize];
 
     unsafe {
-        *lppvData = buffer.as_ptr() as LPVOID;
+        lppvData.write(buffer.as_ptr() as LPVOID);
     }
 
     buffers.insert(buffer.as_ptr() as ULONG_PTR, Buffer { buffer, children: vec![] });
@@ -102,7 +102,7 @@ pub extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppv
     let buffer: Vec<BYTE> = vec![0; ulSize as usize];
 
     unsafe {
-        *lppvData = buffer.as_ptr() as LPVOID;
+        lppvData.write(buffer.as_ptr() as LPVOID);
     }
 
     original_buffer.children.push(buffer);
@@ -192,10 +192,8 @@ pub extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTimeVal: DW
     };
     timers[free] = Some(timer);
 
-    trace!("WFMSetTimer: {}", unsafe { *lpwTimerID });
-
     unsafe {
-        *lpwTimerID = (free + 1) as u16;
+        lpwTimerID.write((free + 1) as u16);
     }
 
     unsafe extern "system" fn timer_proc(_: HWND, _: UINT, id_event: UINT_PTR, _: DWORD) {
