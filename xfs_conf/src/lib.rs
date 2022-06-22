@@ -1,9 +1,9 @@
 use std::{
-    ffi::{c_void, CStr, CString},
+    ffi::{CStr, CString},
     ptr,
 };
 
-use log::{debug, error, trace, LevelFilter};
+use log::{error, trace, LevelFilter};
 use log4rs::{
     append::file::FileAppender,
     config::{Appender, Root},
@@ -19,8 +19,8 @@ use winapi::{
     um::{
         winnt::{DLL_PROCESS_ATTACH, KEY_ALL_ACCESS, LPSTR, REG_CREATED_NEW_KEY, REG_OPENED_EXISTING_KEY, REG_OPTION_NON_VOLATILE, REG_SZ},
         winreg::{
-            RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegGetValueA, RegOpenKeyA, RegQueryValueA, RegQueryValueExA, RegSetValueExA,
-            HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE, HKEY_USERS, RRF_RT_ANY,
+            RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegGetValueA, RegOpenKeyA, RegSetValueExA, HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE, HKEY_USERS,
+            RRF_RT_ANY,
         },
     },
 };
@@ -149,10 +149,6 @@ pub unsafe extern "stdcall" fn WFMEnumKey(hKey: HKEY, iSubKey: DWORD, lpszName: 
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    for i in 0..*lpcchName {
-        *lpszName.add(i as usize) = 0;
-    }
-
     match RegEnumKeyExA(hKey, iSubKey, lpszName, lpcchName, ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), lpftLastWrite) as u32 {
         ERROR_SUCCESS => WFS_SUCCESS,
         ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
@@ -171,7 +167,7 @@ pub unsafe extern "stdcall" fn WFMEnumValue(hKey: HKEY, iValue: DWORD, lpszValue
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    let result = match RegEnumValueA(hKey, iValue, lpszValue, lpcchValue, ptr::null_mut(), ptr::null_mut(), lpszData as *mut u8, lpcchData) as u32 {
+    let result = match RegEnumValueA(hKey, iValue, lpszValue, lpcchValue, ptr::null_mut(), ptr::null_mut(), lpszData as *mut _, lpcchData) as u32 {
         ERROR_SUCCESS => WFS_SUCCESS,
         ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
         ERROR_PATH_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_SUBKEY),
@@ -202,7 +198,6 @@ pub unsafe extern "stdcall" fn WFMOpenKey(hKey: HKEY, lpszSubKey: LPSTR, phkResu
     };
 
     let sub_key = format!("{}{}", sub_key, xfs_unwrap!(CStr::from_ptr(lpszSubKey).to_str()));
-    trace!("OPENING sub_key: {}", sub_key);
     let sub_key_cstring = xfs_unwrap!(CString::new(sub_key));
 
     match RegOpenKeyA(h_key, sub_key_cstring.as_ptr(), phkResult) as DWORD {
@@ -222,7 +217,7 @@ pub unsafe extern "stdcall" fn WFMQueryValue(hKey: HKEY, lpszValueName: LPSTR, l
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    let result = match RegGetValueA(hKey, std::ptr::null_mut(), lpszValueName, RRF_RT_ANY, std::ptr::null_mut(), lpszData as *mut c_void, lpcchData) as u32 {
+    let result = match RegGetValueA(hKey, std::ptr::null_mut(), lpszValueName, RRF_RT_ANY, std::ptr::null_mut(), lpszData as *mut _, lpcchData) as u32 {
         ERROR_SUCCESS => WFS_SUCCESS,
         ERROR_FILE_NOT_FOUND => WFS_ERR_CFG_INVALID_NAME,
         ERROR_PATH_NOT_FOUND => WFS_ERR_CFG_INVALID_HKEY,
@@ -244,7 +239,7 @@ pub unsafe extern "stdcall" fn WFMSetValue(hKey: HKEY, lpszValueName: LPSTR, lps
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    match RegSetValueExA(hKey, lpszValueName, 0, REG_SZ, lpszData as *mut u8, cchData) as u32 {
+    match RegSetValueExA(hKey, lpszValueName, 0, REG_SZ, lpszData as *mut _, cchData) as u32 {
         ERROR_SUCCESS => WFS_SUCCESS,
         ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
         _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
