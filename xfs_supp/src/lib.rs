@@ -1,4 +1,6 @@
 use std::ffi::CStr;
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::{collections::HashMap, sync::Mutex};
 
 use lazy_static::lazy_static;
@@ -8,20 +10,18 @@ use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log4rs::Config;
 use log_derive::{logfn, logfn_inputs};
-use winapi::shared::minwindef::BYTE;
+use winapi::shared::basetsd::UINT_PTR;
+use winapi::shared::minwindef::UINT;
+use winapi::um::winuser::{KillTimer, PostMessageA, SetTimer};
 use winapi::{
     shared::{
-        basetsd::{UINT_PTR, ULONG_PTR},
-        minwindef::{DWORD, HINSTANCE, LPARAM, LPVOID, LPWORD, UINT, ULONG, WORD},
+        basetsd::ULONG_PTR,
+        minwindef::{DWORD, HINSTANCE, LPVOID, LPWORD, ULONG, WORD},
         windef::HWND,
         winerror::HRESULT,
     },
-    um::{
-        winnt::{DLL_PROCESS_ATTACH, LPSTR},
-        winuser::{KillTimer, PostMessageA, SetTimer},
-    },
+    um::winnt::{DLL_PROCESS_ATTACH, LPSTR},
 };
-
 use xfslib::*;
 
 /// Unwraps result, logging error if any and returning xfs internal error value.
@@ -46,22 +46,21 @@ macro_rules! xfs_reject {
 
 lazy_static! {
     // holds application & service providers buffers
-    static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Buffer>> = Mutex::new(HashMap::new());
+    static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Allocation>> = Mutex::new(HashMap::new());
 
     // holds application timers
-    static ref TIMERS: Mutex<Vec<Option<Timer>>> = Mutex::new((0..65535).map(|_| None).collect());
+    static ref TIMERS: Vec<AtomicPtr<Timer>> = (0..65535).map(|_| AtomicPtr::new(ptr::null_mut())).collect();
 }
 
-#[allow(dead_code)]
-struct Buffer {
-    buffer: Vec<BYTE>,
-    children: Vec<Vec<BYTE>>,
+struct Allocation {
+    _buffer: Vec<u8>,
+    extended: Vec<Vec<u8>>,
+    flags: ULONG,
 }
 
 struct Timer {
-    hwnd: ULONG_PTR,
-    lpcontext: ULONG_PTR,
-    timer_id: usize,
+    hwnd: HWND,
+    context: LPVOID,
 }
 
 #[allow(non_snake_case)]
@@ -73,14 +72,24 @@ pub extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvDat
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    let mut buffers = xfs_unwrap!(BUFFERS.lock());
-    let buffer: Vec<BYTE> = vec![0; ulSize as usize];
+    let mut buffer: Vec<u8> = if ulFlags & WFS_MEM_ZEROINIT == 0 {
+        Vec::with_capacity(ulSize as usize)
+    } else {
+        vec![0; ulSize as usize]
+    };
+    let ptr = buffer.as_mut_ptr();
 
+    // SAFETY: we know that lppvData is not null
     unsafe {
-        lppvData.write(buffer.as_ptr() as LPVOID);
+        lppvData.write(ptr as *mut _);
     }
 
-    buffers.insert(buffer.as_ptr() as ULONG_PTR, Buffer { buffer, children: vec![] });
+    let allocation = Allocation {
+        _buffer: buffer,
+        extended: Vec::new(),
+        flags: ulFlags,
+    };
+    xfs_unwrap!(BUFFERS.lock()).insert(ptr as _, allocation);
     WFS_SUCCESS
 }
 
@@ -89,23 +98,29 @@ pub extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvDat
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppvData: *mut LPVOID) -> HRESULT {
-    if lppvData.is_null() {
+    if lppvData.is_null() || lpvOriginal.is_null() {
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
     let mut buffers = xfs_unwrap!(BUFFERS.lock());
-    let original_buffer = match buffers.get_mut(&(lpvOriginal as ULONG_PTR)) {
-        Some(list) => list,
+
+    let allocation = match buffers.get_mut(&(lpvOriginal as ULONG_PTR)) {
+        Some(allocation) => allocation,
         None => xfs_reject!(WFS_ERR_INVALID_BUFFER),
     };
 
-    let buffer: Vec<BYTE> = vec![0; ulSize as usize];
+    let mut buffer: Vec<u8> = if allocation.flags & WFS_MEM_ZEROINIT == 0 {
+        Vec::with_capacity(ulSize as usize)
+    } else {
+        vec![0; ulSize as usize]
+    };
 
+    // SAFETY: we know that lppvData is not null
     unsafe {
-        lppvData.write(buffer.as_ptr() as LPVOID);
+        lppvData.write(buffer.as_mut_ptr() as *mut _);
     }
 
-    original_buffer.children.push(buffer);
+    allocation.extended.push(buffer);
     WFS_SUCCESS
 }
 
@@ -118,11 +133,10 @@ pub extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    let mut buffers = xfs_unwrap!(BUFFERS.lock());
-
-    if buffers.remove(&(lpvData as ULONG_PTR)).is_none() {
+    if xfs_unwrap!(BUFFERS.lock()).remove(&(lpvData as ULONG_PTR)).is_none() {
         xfs_reject!(WFS_ERR_INVALID_BUFFER);
     }
+
     WFS_SUCCESS
 }
 
@@ -131,20 +145,25 @@ pub extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
-    let mut timers = xfs_unwrap!(TIMERS.lock());
-
-    let timer = match timers.get(wTimerID as usize - 1) {
-        Some(Some(timer)) => timer,
-        _ => xfs_reject!(WFS_ERR_INVALID_TIMER),
-    };
-
-    unsafe {
-        if KillTimer(timer.hwnd as HWND, timer.timer_id) == 0 {
-            xfs_reject!(WFS_ERR_INTERNAL_ERROR);
-        }
+    if wTimerID == 0 {
+        xfs_reject!(WFS_ERR_INVALID_TIMER);
     }
 
-    timers.insert(wTimerID as usize - 1, None);
+    let timer = TIMERS[wTimerID as usize - 1].swap(ptr::null_mut(), Ordering::SeqCst);
+
+    // Verify that the timer was not destroyed
+    if timer.is_null() {
+        xfs_reject!(WFS_ERR_INVALID_TIMER);
+    }
+
+    // SAFETY: we checked that timer is not null and we know it's not dropped yet since we are using atomic swap
+    let timer = unsafe { Box::from_raw(timer) };
+
+    // SAFETY: all parameters are valid
+    unsafe {
+        KillTimer(timer.hwnd, wTimerID as usize);
+    }
+
     WFS_SUCCESS
 }
 
@@ -172,35 +191,34 @@ pub extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTimeVal: DW
         xfs_reject!(WFS_ERR_INVALID_DATA);
     }
 
-    let mut timers = xfs_unwrap!(TIMERS.lock());
+    let timer = Timer { hwnd: hWnd, context: lpContext };
+    let timer_ptr = Box::into_raw(Box::new(timer));
 
-    let free = match timers.iter().position(|t| t.is_none()) {
-        Some(index) => index,
-        None => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
+    let timer_id = match TIMERS.iter().position(|p| p.compare_exchange(ptr::null_mut(), timer_ptr, Ordering::SeqCst, Ordering::SeqCst).is_ok()) {
+        Some(index) => index + 1,
+        None => {
+            // SAFETY: the timer was allocated and not dropped yet
+            let _ = unsafe { Box::from_raw(timer_ptr) };
+            xfs_reject!(WFS_ERR_INTERNAL_ERROR)
+        }
     };
-
-    let id_event = (&*timers) as *const _ as usize + free;
-
-    if unsafe { SetTimer(hWnd, id_event, dwTimeVal, Some(timer_proc)) } == 0 {
-        xfs_reject!(WFS_ERR_INTERNAL_ERROR);
-    }
-
-    let timer = Timer {
-        hwnd: hWnd as ULONG_PTR,
-        lpcontext: lpContext as ULONG_PTR,
-        timer_id: id_event,
-    };
-    timers[free] = Some(timer);
 
     unsafe {
-        lpwTimerID.write((free + 1) as u16);
+        if SetTimer(hWnd, timer_id, dwTimeVal, Some(timer_proc)) == 0 {
+            TIMERS[timer_id as usize - 1].store(ptr::null_mut(), Ordering::SeqCst);
+            let _ = Box::from_raw(timer_ptr);
+            xfs_reject!(WFS_ERR_INTERNAL_ERROR);
+        }
+        *lpwTimerID = timer_id as u16;
     }
 
-    unsafe extern "system" fn timer_proc(_: HWND, _: UINT, id_event: UINT_PTR, _: DWORD) {
-        let timers = TIMERS.lock().unwrap(); // TODO: don't unwrap this shit, think of a better way to handle it?
-        let timer = &timers[id_event as usize - (&*timers as *const _ as usize)].as_ref().unwrap();
-        trace!("timer_proc: {}", timer.timer_id);
-        PostMessageA(timer.hwnd as HWND, WFS_TIMER_EVENT, id_event, timer.lpcontext as LPARAM);
+    unsafe extern "system" fn timer_proc(hwnd: HWND, _msg: UINT, id_event: UINT_PTR, _elapsed: DWORD) {
+        let ptr = TIMERS[id_event as usize - 1].swap(ptr::null_mut(), Ordering::SeqCst);
+
+        if !ptr.is_null() {
+            let timer = Box::from_raw(ptr);
+            PostMessageA(hwnd, WFS_TIMER_EVENT, id_event, timer.context as _);
+        }
     }
 
     WFS_SUCCESS
@@ -219,19 +237,13 @@ pub extern "stdcall" fn WFMSetTraceLevel(_hService: HSERVICE, _dwTraceLevel: DWO
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn CleanUp() -> HRESULT {
-    {
-        let mut timers = xfs_unwrap!(TIMERS.lock());
-        for timer in timers.iter_mut() {
-            if let Some(timer) = timer {
-                unsafe {
-                    KillTimer(std::ptr::null_mut(), timer.timer_id);
-                }
-            }
-        }
+    for timer in TIMERS.iter().map(|timer| timer.swap(ptr::null_mut(), Ordering::SeqCst)).filter(|timer| !timer.is_null()) {
+        // SAFETY: we know that timer is not null and we know it's not dropped yet since we are using atomic swap
+        let _ = unsafe { Box::from_raw(timer) };
     }
 
-    let mut buffers = xfs_unwrap!(BUFFERS.lock());
-    buffers.clear();
+    // Buffers are contained in vectors, so dropping them is safe
+    xfs_unwrap!(BUFFERS.lock()).clear();
 
     WFS_SUCCESS
 }

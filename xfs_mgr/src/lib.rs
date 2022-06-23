@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    ffi::{c_void, CStr, CString},
+    ffi::{CStr, CString},
     mem, ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -48,9 +48,6 @@ lazy_static! {
 
     // indicates whether WFSStartup has been called
     static ref STARTED: AtomicBool = AtomicBool::new(false);
-
-    // holds application & service providers buffers
-    // static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Vec<ULONG_PTR>>> = Mutex::new(HashMap::new());
 
     // holds blocked threads and unblock flag
     static ref BLOCKED_THREADS: Mutex<HashMap<DWORD, bool>> = Mutex::new(HashMap::new());
@@ -150,22 +147,18 @@ pub extern "stdcall" fn WFSCancelAsyncRequest(hService: HSERVICE, RequestID: REQ
     assert_started!();
     assert_unblocked!();
 
-    let services = xfs_unwrap!(SERVICES.lock());
-    if let Some(service) = services.get(hService as usize - 1).and_then(|service| service.as_ref()) {
-        let wfp_cancel_async_request = unsafe { xfs_unwrap!(service.library.get::<spi::WfpCancelAsyncRequest>(b"WFPCancelAsyncRequest")) };
-        return wfp_cancel_async_request(hService, RequestID);
-    }
-
     if hService == 0 {
         xfs_reject!(WFS_ERR_INVALID_HSERVICE);
     }
 
-    if let Some(service) = services.get(hService as usize - 1).and_then(|service| service.as_ref()) {
-        let wfp_cancel_async_request = unsafe { xfs_unwrap!(service.library.get::<spi::WfpCancelAsyncRequest>(b"WFPCancelAsyncRequest")) };
-        return wfp_cancel_async_request(hService, RequestID);
-    }
+    let services = xfs_unwrap!(SERVICES.lock());
+    let service = match services.get(hService as usize - 1).and_then(|service| service.as_ref()) {
+        Some(service) => service,
+        None => xfs_reject!(WFS_ERR_INVALID_HSERVICE),
+    };
+    let cancel = unsafe { xfs_unwrap!(service.library.get::<spi::WfpCancelAsyncRequest>(b"WFPCancelAsyncRequest")) };
 
-    xfs_reject!(WFS_ERR_INVALID_HSERVICE);
+    cancel(hService, RequestID)
 }
 
 #[allow(non_snake_case)]
@@ -248,8 +241,7 @@ pub extern "stdcall" fn WFSAsyncClose(hService: HSERVICE, hWnd: HWND, lpRequestI
     let service = get_service_req!(hService, services);
 
     let wfp_close = unsafe {
-        *lpRequestID = service.request_id as u32;
-        trace!("CALLING WFP Close");
+        lpRequestID.write(service.request_id as u32);
         xfs_unwrap!(service.library.get::<spi::WfpClose>(b"WFPClose"))
     };
 
@@ -280,20 +272,17 @@ pub extern "stdcall" fn WFSCreateAppHandle(lphApp: LPHAPP) -> HRESULT {
     let mut handles = xfs_unwrap!(APP_HANDLES.lock());
 
     let free = match handles.iter().position(|h| !h) {
-        Some(index) => {
-            handles[index] = true;
-            index
-        }
+        Some(index) => index,
         None => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
     };
 
+    handles[free] = true;
     let ptr = (&*handles) as *const _ as usize + free;
-    unsafe {
-        *lphApp = ptr as HAPP;
-    }
-    trace!("Created app handle {:?}", ptr);
 
-    trace!("XFS APP HANDLE DONE");
+    unsafe {
+        lphApp.write(ptr as HAPP);
+    }
+
     WFS_SUCCESS
 }
 
@@ -323,7 +312,7 @@ pub extern "stdcall" fn WFSAsyncDeregister(hService: HSERVICE, dwEventClass: DWO
     let service = get_service_req!(hService, services);
 
     let wfp_deregister = unsafe {
-        *lpRequestID = service.request_id as u32;
+        lpRequestID.write(service.request_id as u32);
         xfs_unwrap!(service.library.get::<spi::WFPDeregister>(b"WFPDeregister"))
     };
 
@@ -385,7 +374,7 @@ pub extern "stdcall" fn WFSAsyncExecute(hService: HSERVICE, dwCommand: DWORD, lp
     let service = get_service_req!(hService, services);
 
     let wfp_execute = unsafe {
-        *lpRequestID = service.request_id as u32;
+        lpRequestID.write(service.request_id as u32);
         xfs_unwrap!(service.library.get::<spi::WFPExecute>(b"WFPExecute"))
     };
 
@@ -399,7 +388,7 @@ pub extern "stdcall" fn WFSAsyncExecute(hService: HSERVICE, dwCommand: DWORD, lp
 pub extern "stdcall" fn WFSFreeResult(lpResult: LPWFSRESULT) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    unsafe { WFMFreeBuffer(lpResult as *mut c_void) }
+    unsafe { WFMFreeBuffer(lpResult as *mut _) }
 }
 
 #[allow(non_snake_case)]
@@ -428,7 +417,7 @@ pub extern "stdcall" fn WFSAsyncGetInfo(hService: HSERVICE, dwCategory: DWORD, l
     let service = get_service_req!(hService, services);
 
     let wfp_get_info = unsafe {
-        *lpRequestID = service.request_id as u32;
+        lpRequestID.write(service.request_id as u32);
         xfs_unwrap!(service.library.get::<spi::WFPGetInfo>(b"WFPGetInfo"))
     };
 
@@ -466,7 +455,7 @@ pub extern "stdcall" fn WFSAsyncLock(hService: HSERVICE, dwTimeOut: DWORD, hWnd:
     let service = get_service_req!(hService, services);
 
     let wfp_lock = unsafe {
-        *lpRequestID = service.request_id as u32;
+        lpRequestID.write(service.request_id as u32);
         xfs_unwrap!(service.library.get::<spi::WFPLock>(b"WFPLock"))
     };
 
@@ -537,75 +526,92 @@ pub extern "stdcall" fn WFSAsyncOpen(
     lpRequestID: LPREQUESTID,
 ) -> HRESULT {
     assert_started!();
-    // assert_unblocked!();
+    assert_unblocked!();
 
-    if lpszLogicalName.is_null() || lpSrvcVersion.is_null() || lpSPIVersion.is_null() {
+    if lpszLogicalName.is_null() || lpSrvcVersion.is_null() || lpSPIVersion.is_null() || lphService.is_null() || lpRequestID.is_null() {
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
-    unsafe {
-        trace!("OPENING DEVICE: {}", xfs_unwrap!(CStr::from_ptr(lpszLogicalName).to_str()));
-    }
 
+    // SAFETY: We are not responsible for the memory allocated by the caller.
     unsafe {
         *lphService = 0;
         *lpRequestID = 0;
 
-        (*lpSrvcVersion).w_version = 0;
-        (*lpSrvcVersion).w_low_version = 0;
-        (*lpSrvcVersion).w_high_version = 0;
-        (*lpSrvcVersion).sz_description = [0; WFSDDESCRIPTION_LEN + 1];
-        (*lpSrvcVersion).sz_system_status = [0; WFSDDESCRIPTION_LEN + 1];
+        // Use ptr::write to avoid dropping of memory allocated by the caller.
+        lpSrvcVersion.write(WFSVERSION {
+            w_version: 0,
+            w_low_version: 0,
+            w_high_version: 0,
+            sz_description: [0; WFSDDESCRIPTION_LEN + 1],
+            sz_system_status: [0; WFSDDESCRIPTION_LEN + 1],
+        });
 
-        (*lpSPIVersion).w_version = 0;
-        (*lpSPIVersion).w_low_version = 0;
-        (*lpSPIVersion).w_high_version = 0;
-        (*lpSPIVersion).sz_description = [0; WFSDDESCRIPTION_LEN + 1];
-        (*lpSPIVersion).sz_system_status = [0; WFSDDESCRIPTION_LEN + 1];
+        // Use ptr::write to avoid dropping of memory allocated by the caller.
+        lpSPIVersion.write(WFSVERSION {
+            w_version: 0,
+            w_low_version: 0,
+            w_high_version: 0,
+            sz_description: [0; WFSDDESCRIPTION_LEN + 1],
+            sz_system_status: [0; WFSDDESCRIPTION_LEN + 1],
+        });
     }
 
-    fn get_value(root: HKEY, path: CString, value: CString) -> Result<String, HRESULT> {
+    fn get_value(root: HKEY, path: CString, name: CString) -> Result<String, HRESULT> {
         let mut key = ptr::null_mut();
 
-        if unsafe { WFM_OPEN_KEY(root, path.as_ptr() as *mut i8, &mut key) } != WFS_SUCCESS {
-            return Err(WFS_ERR_INVALID_SERVPROV);
-        }
-
-        let value_buffer = [0; MAX_PATH];
-        let value_len = &mut (MAX_PATH as u32);
-
-        if unsafe { WFM_QUERY_VALUE(key, value.as_ptr() as *mut i8, value_buffer.as_ptr() as *mut i8, value_len) } != WFS_SUCCESS {
-            unsafe {
-                WFM_CLOSE_KEY(key);
+        // SAFETY: the path pointer is function argument, and it is not null
+        unsafe {
+            if WFM_OPEN_KEY(root, path.as_ptr() as *mut _, &mut key) != WFS_SUCCESS {
+                error!("WFM_OPEN_KEY failed");
+                return Err(WFS_ERR_INVALID_SERVPROV);
             }
-            return Err(WFS_ERR_INVALID_SERVPROV);
         }
+
+        let mut value_buffer: Vec<u8> = Vec::with_capacity(MAX_PATH);
+        let mut value_len = MAX_PATH as u32;
+
+        // SAFETY:
+        // - the key pointer is not null as the WFM_OPEN_KEY call succeeded
+        // - the value pointer is function argument, and it is not null
+        // - the value buffer pointer is not null as the vector allocated this memory
+        unsafe {
+            if WFM_QUERY_VALUE(key, name.as_ptr() as *mut i8, value_buffer.as_mut_ptr() as *mut _, &mut value_len) != WFS_SUCCESS {
+                WFM_CLOSE_KEY(key);
+                error!("WFM_QUERY_VALUE failed");
+                return Err(WFS_ERR_INVALID_SERVPROV);
+            }
+        }
+
+        // SAFETY: We know that the buffer is at least as large as the value_len.
+        unsafe {
+            value_buffer.set_len(value_len as usize);
+        }
+
+        // SAFETY: the key was opened by WFM_OPEN_KEY, so it is a valid pointer.
         unsafe {
             WFM_CLOSE_KEY(key);
         }
 
-        match std::str::from_utf8(&value_buffer[..*value_len as usize]) {
-            Ok(s) => Ok(s.to_string()),
-            Err(error) => {
-                error!("{}", error);
-                Err(WFS_ERR_INTERNAL_ERROR)
-            }
-        }
+        Ok(String::from_utf8(value_buffer).map_err(|error| {
+            error!("{}", error);
+            WFS_ERR_INTERNAL_ERROR
+        })?)
     }
 
     let logical_name = xfs_unwrap!(unsafe { CStr::from_ptr(lpszLogicalName) }.to_str());
     let path = xfs_unwrap!(CString::new(format!("LOGICAL_SERVICES\\{}", logical_name)));
-    let lgl_prov_path = match get_value(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path, xfs_unwrap!(CString::new("provider"))) {
+    let lgl_prov_path = match get_value(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path, CString::new("provider").unwrap()) {
         Ok(lgl_prov_path) => lgl_prov_path,
-        Err(error) => xfs_reject!(error),
+        Err(error) => return error,
     };
 
     let path = xfs_unwrap!(CString::new(format!("SERVICE_PROVIDERS\\{}", lgl_prov_path)));
-    let phy_prov_path = match get_value(WFS_CFG_HKEY_MACHINE_XFS_ROOT, path, xfs_unwrap!(CString::new("dllname"))) {
+    let phy_prov_path = match get_value(WFS_CFG_HKEY_MACHINE_XFS_ROOT, path, CString::new("dllname").unwrap()) {
         Ok(phy_prov_path) => phy_prov_path,
-        Err(error) => xfs_reject!(error),
+        Err(error) => return error,
     };
 
-    trace!("PHYSICAL_PROVIDER: {}", phy_prov_path);
+    // SAFETY: The service providers are safe to use.
     let library = unsafe { xfs_unwrap!(libloading::Library::new(phy_prov_path)) };
 
     let mut services = xfs_unwrap!(SERVICES.lock());
@@ -620,18 +626,15 @@ pub extern "stdcall" fn WFSAsyncOpen(
         request_id: 1,
         trace_level: dwTraceLevel,
     });
+    let service = services[service_index].as_ref().unwrap();
 
+    // SAFETY: The service providers are safe to use. All pointers are checked and not null.
     unsafe {
         *lphService = service_index as u16 + 1;
         *lpRequestID = 1;
-    }
 
-    let service_handle = (&*services) as *const _ as HPROVIDER;
-    let service_handle = unsafe { service_handle.add(service_index) };
-    let service = services[service_index].as_ref().unwrap();
-
-    unsafe {
         let wfp_open = xfs_unwrap!(service.library.get::<spi::WfpOpen>(b"WFPOpen"));
+        let service_handle = ((&*services) as *const _ as HPROVIDER).add(service_index);
 
         wfp_open(
             *lphService,
@@ -679,7 +682,7 @@ pub extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD
     let service = get_service_req!(hService, services);
 
     let wfp_register = unsafe {
-        *lpRequestID = service.request_id as u32;
+        lpRequestID.write(service.request_id as u32);
         xfs_unwrap!(service.library.get::<spi::WFPRegister>(b"WFPRegister"))
     };
 
@@ -689,8 +692,8 @@ pub extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD
 #[allow(non_snake_case)]
 #[no_mangle]
 #[logfn(TRACE)]
-#[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrevFunc: LPXFSBLOCKINGHOOK) -> HRESULT {
+// #[logfn_inputs(TRACE)]
+pub extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrevFunc: *mut XFSBLOCKINGHOOK) -> HRESULT {
     assert_started!();
     assert_unblocked!();
 
@@ -698,7 +701,7 @@ pub extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrev
 
     match *blocking_hook {
         Some(prev) => unsafe {
-            *lppPrevFunc = prev;
+            lppPrevFunc.write(prev);
             *blocking_hook = Some(lpBlockFunc);
         },
         None => {
@@ -729,18 +732,22 @@ pub extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWF
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    unsafe {
-        (*lpWFSVersion).w_version = 3;
-        (*lpWFSVersion).w_low_version = 2;
-        (*lpWFSVersion).w_high_version = 7683;
-        (*lpWFSVersion).sz_system_status[0] = '\0' as i8;
-    }
+    let mut version = WFSVERSION {
+        w_version: 0,
+        w_low_version: 0,
+        w_high_version: 0,
+        sz_description: [0; WFSDDESCRIPTION_LEN + 1],
+        sz_system_status: [0; WFSDSYSSTATUS_LEN + 1],
+    };
 
     let description = "Rust XFS Manager v2.00 to v3.20".as_bytes();
-    for i in 0..description.len() {
-        unsafe {
-            (*lpWFSVersion).sz_description[i] = description[i] as i8;
-        }
+    for i in 0..std::cmp::min(description.len(), WFSDDESCRIPTION_LEN) {
+        version.sz_description[i] = description[i] as i8;
+    }
+
+    // SAFETY: The pointer is not null. Using ptr::write to avoid dropping memory allocated by the caller.
+    unsafe {
+        lpWFSVersion.write(version);
     }
 
     if STARTED.load(Ordering::SeqCst) {
@@ -787,7 +794,7 @@ pub extern "stdcall" fn WFSAsyncUnlock(hService: HSERVICE, hWnd: HWND, lpRequest
     let service = get_service_req!(hService, services);
 
     let wfp_unlock = unsafe {
-        *lpRequestID = service.request_id as u32;
+        lpRequestID.write(service.request_id as u32);
         xfs_unwrap!(service.library.get::<spi::WFPUnlock>(b"WFPUnlock"))
     };
 
@@ -805,7 +812,7 @@ pub extern "stdcall" fn WFMGetTraceLevel(hService: HSERVICE, lpdwTraceLevel: LPD
 
     if let Some(service) = services.get(hService as usize - 1).and_then(|service| service.as_ref()) {
         unsafe {
-            *lpdwTraceLevel = service.trace_level;
+            lpdwTraceLevel.write(service.trace_level);
         }
         return WFS_SUCCESS;
     }
@@ -927,9 +934,9 @@ fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp
     loop {
         // Execute application hook or default hook dispatching window messages
         match *xfs_unwrap!(BLOCKING_HOOK.lock()) {
-            Some(hook) => {
+            Some(hook) => unsafe {
                 hook();
-            }
+            },
             None => unsafe {
                 default_block_hook();
             },

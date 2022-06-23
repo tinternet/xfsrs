@@ -41,7 +41,7 @@ struct XFSApi<'a> {
     WFSAsyncOpen: Symbol<'a, unsafe extern "stdcall" fn(LPSTR, HAPP, LPSTR, DWORD, DWORD, LPHSERVICE, HWND, DWORD, LPWFSVERSION, LPWFSVERSION, LPREQUESTID) -> HRESULT>,
     WFSRegister: Symbol<'a, unsafe extern "stdcall" fn(HSERVICE, DWORD, HWND) -> HRESULT>,
     WFSAsyncRegister: Symbol<'a, unsafe extern "stdcall" fn(HSERVICE, DWORD, HWND, HWND, LPREQUESTID) -> HRESULT>,
-    WFSSetBlockingHook: Symbol<'a, unsafe extern "stdcall" fn(XFSBLOCKINGHOOK, LPXFSBLOCKINGHOOK) -> HRESULT>,
+    WFSSetBlockingHook: Symbol<'a, unsafe extern "stdcall" fn(XFSBLOCKINGHOOK, *mut XFSBLOCKINGHOOK) -> HRESULT>,
     WFSStartUp: Symbol<'a, unsafe extern "stdcall" fn(DWORD, LPWFSVERSION) -> HRESULT>,
     WFSUnhookBlockingHook: Symbol<'a, unsafe extern "stdcall" fn() -> HRESULT>,
     WFSUnlock: Symbol<'a, unsafe extern "stdcall" fn(HSERVICE) -> HRESULT>,

@@ -3,6 +3,9 @@ use winapi::{
     um::winuser::WM_USER,
 };
 
+pub const WFS_MEM_SHARE: u32 = 0x00000001;
+pub const WFS_MEM_ZEROINIT: u32 = 0x00000002;
+
 pub const WFSDDESCRIPTION_LEN: usize = 256;
 pub const WFSDSYSSTATUS_LEN: usize = 256;
 

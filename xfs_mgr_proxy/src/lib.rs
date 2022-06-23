@@ -54,7 +54,7 @@ struct XFSApi {
     WFSAsyncOpen: Symbol<'static, unsafe extern "stdcall" fn(LPSTR, HAPP, LPSTR, DWORD, DWORD, LPHSERVICE, HWND, DWORD, LPWFSVERSION, LPWFSVERSION, LPREQUESTID) -> HRESULT>,
     WFSRegister: Symbol<'static, unsafe extern "stdcall" fn(HSERVICE, DWORD, HWND) -> HRESULT>,
     WFSAsyncRegister: Symbol<'static, unsafe extern "stdcall" fn(HSERVICE, DWORD, HWND, HWND, LPREQUESTID) -> HRESULT>,
-    WFSSetBlockingHook: Symbol<'static, unsafe extern "stdcall" fn(XFSBLOCKINGHOOK, LPXFSBLOCKINGHOOK) -> HRESULT>,
+    WFSSetBlockingHook: Symbol<'static, unsafe extern "stdcall" fn(XFSBLOCKINGHOOK, *mut XFSBLOCKINGHOOK) -> HRESULT>,
     WFSStartUp: Symbol<'static, unsafe extern "stdcall" fn(DWORD, LPWFSVERSION) -> HRESULT>,
     WFSUnhookBlockingHook: Symbol<'static, unsafe extern "stdcall" fn() -> HRESULT>,
     WFSUnlock: Symbol<'static, unsafe extern "stdcall" fn(HSERVICE) -> HRESULT>,
@@ -352,7 +352,7 @@ pub unsafe extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass
 
 #[allow(non_snake_case)]
 #[no_mangle]
-pub unsafe extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrevFunc: LPXFSBLOCKINGHOOK) -> HRESULT {
+pub unsafe extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrevFunc: *mut XFSBLOCKINGHOOK) -> HRESULT {
     trace!("WFSSetBlockingHook");
     (XFS.WFSSetBlockingHook)(lpBlockFunc, lppPrevFunc)
 }
