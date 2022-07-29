@@ -188,12 +188,14 @@ pub extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT {
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
-    assert_unblocked!();
+    // assert_unblocked!();
 
-    {
-        let mut services = xfs_unwrap!(SERVICES.lock());
-        *services = (0..8192).map(|_| None).collect();
-    }
+    // {
+    //     let mut services = xfs_unwrap!(SERVICES.lock());
+    //     for service in services.iter_mut() {
+    //         *service = None;
+    //     }
+    // }
 
     {
         let mut handles = xfs_unwrap!(APP_HANDLES.lock());
@@ -210,9 +212,9 @@ pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
         *blocking_hook = None;
     }
 
-    unsafe {
-        (XFS_SUPP_CLEANUP)();
-    }
+    // unsafe {
+    //     (XFS_SUPP_CLEANUP)();
+    // }
 
     STARTED.store(false, Ordering::SeqCst);
 
@@ -661,11 +663,11 @@ pub extern "stdcall" fn WFSAsyncOpen(
 pub extern "stdcall" fn WFSRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
     assert_started!();
     // block_thread!();
-    // if hService == 0 {
-    //     return WFS_SUCCESS;
-    // }
+    if hService == 0 {
+        return WFS_SUCCESS;
+    }
     call_async(
-        WFS_GETINFO_COMPLETE,
+        WFS_REGISTER_COMPLETE,
         |hwnd, request_id| WFSAsyncRegister(hService, dwEventClass, hWndReg, hwnd, request_id),
         &mut ptr::null_mut(),
     )
@@ -780,7 +782,7 @@ pub extern "stdcall" fn WFSUnhookBlockingHook() -> HRESULT {
 pub extern "stdcall" fn WFSUnlock(hService: HSERVICE) -> HRESULT {
     assert_started!();
     // block_thread!();
-    call_async(WFS_GETINFO_COMPLETE, |hwnd, request_id| WFSAsyncUnlock(hService, hwnd, request_id), &mut ptr::null_mut())
+    call_async(WFS_UNLOCK_COMPLETE, |hwnd, request_id| WFSAsyncUnlock(hService, hwnd, request_id), &mut ptr::null_mut())
 }
 
 #[allow(non_snake_case)]
@@ -908,7 +910,7 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
     if fdw_reason == DLL_PROCESS_ATTACH {
         let logfile = FileAppender::builder()
             .encoder(Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S)} {l} {L} - {m}\n")))
-            .build("C:\\XFS_MGR.log")
+            .build("C:\\Diebold\\XFS_MGR.log")
             .unwrap();
         let config = Config::builder()
             .appender(Appender::builder().build("logfile", Box::new(logfile)))
@@ -954,7 +956,7 @@ fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp
 
         // Check if we received result from the async call
         if let Some(resultptr) = xfs_unwrap!(window.try_receive()) {
-            unsafe { *lpp_result = result as LPWFSRESULT };
+            unsafe { lpp_result.write(resultptr as LPWFSRESULT) };
             let wfs_result = resultptr as *const WFSRESULT;
             let wfs_result = unsafe { std::mem::transmute::<*const WFSRESULT, &WFSRESULT>(wfs_result) };
             return unsafe { ptr::addr_of!(wfs_result.hResult).read_unaligned() };
