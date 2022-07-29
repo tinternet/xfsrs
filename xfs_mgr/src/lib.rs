@@ -133,12 +133,6 @@ struct Service {
     trace_level: DWORD,
 }
 
-impl Drop for Service {
-    fn drop(&mut self) {
-        WFSClose(self.service_id);
-    }
-}
-
 #[allow(non_snake_case)]
 #[no_mangle]
 #[logfn(TRACE)]
@@ -189,13 +183,12 @@ pub extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT {
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
     // assert_unblocked!();
+    STARTED.store(false, Ordering::SeqCst);
 
-    // {
-    //     let mut services = xfs_unwrap!(SERVICES.lock());
-    //     for service in services.iter_mut() {
-    //         *service = None;
-    //     }
-    // }
+    {
+        let mut services = xfs_unwrap!(SERVICES.lock());
+        services.iter_mut().filter_map(|s| s.take()).for_each(drop);
+    }
 
     {
         let mut handles = xfs_unwrap!(APP_HANDLES.lock());
@@ -215,8 +208,6 @@ pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
     // unsafe {
     //     (XFS_SUPP_CLEANUP)();
     // }
-
-    STARTED.store(false, Ordering::SeqCst);
 
     WFS_SUCCESS
 }

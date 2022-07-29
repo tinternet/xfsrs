@@ -86,6 +86,10 @@ pub type WfpOpen = extern "stdcall" fn(
 mod window;
 
 fn main() {
+    unsafe { test() };
+}
+
+unsafe fn test_sample() {
     unsafe {
         let lib = libloading::Library::new(r"C:\Users\bloc4\Downloads\OpenXFS_V0.0.0.5\dll\SPI_LQ2090.dll").unwrap();
         let open = lib.get::<WfpOpen>(b"WFPOpen").unwrap();
@@ -191,7 +195,7 @@ unsafe fn test_buffers() {
 
 #[allow(non_snake_case)]
 unsafe fn test() {
-    let lib = libloading::Library::new("msxfs.dll").unwrap();
+    let lib = libloading::Library::new("E:\\xfrs\\target\\i686-pc-windows-msvc\\debug\\msxfs.dll").unwrap();
     let api = XFSApi {
         WFSCancelAsyncRequest: lib.get(b"WFSCancelAsyncRequest").unwrap(),
         WFSCancelBlockingCall: lib.get(b"WFSCancelBlockingCall").unwrap(),
@@ -255,8 +259,8 @@ unsafe fn test() {
         sz_system_status: [0; WFSDSYSSTATUS_LEN + 1],
     };
     let mut lphService: HSERVICE = 0;
-    let service = CString::new("cwd").unwrap();
-    let app_id = CString::new("cwd").unwrap();
+    let service = CString::new("DBD_AdvFuncDisp").unwrap();
+    let app_id = CString::new("CDM").unwrap();
     let result = (api.WFSOpen)(
         service.as_ptr() as *mut i8,
         1 as *mut c_void,
@@ -269,4 +273,7 @@ unsafe fn test() {
         &mut lphService,
     );
     println!("{}, {:?}, {:?}, {:?}", result, lpSrvcVersion, lpSPIVersion, lphService);
+
+    let result = (api.WFSCleanUp)();
+    println!("{}", result);
 }
