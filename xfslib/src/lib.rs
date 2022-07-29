@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, ptr};
 
 use winapi::ctypes::c_char;
 use winapi::shared::minwindef::{DWORD, LPVOID, WORD};
@@ -42,8 +42,8 @@ pub union U {
     pub dwEventID: DWORD,
 }
 
-#[repr(C)]
 #[allow(non_snake_case)]
+#[repr(C, packed)]
 pub struct WFSRESULT {
     pub RequestID: ULONG,
     pub hService: HSERVICE,
@@ -59,7 +59,16 @@ impl fmt::Debug for WFSRESULT {
             write!(
                 f,
                 "RequestID: {}, hService: {}, tsTimestamp: {}, hResult: {}, u.dwCommandCode: {}, u.dwEventID: {}, lpBuffer: {:?}",
-                self.RequestID, self.hService, "", self.hResult, self.u.dwCommandCode, self.u.dwEventID, *self.lpBuffer
+                *ptr::addr_of!(self.RequestID),
+                *ptr::addr_of!(self.hService),
+                format!(
+                    "{}-{}-{} {}:{}:{}",
+                    self.tsTimestamp.wYear, self.tsTimestamp.wMonth, self.tsTimestamp.wDay, self.tsTimestamp.wHour, self.tsTimestamp.wMinute, self.tsTimestamp.wSecond,
+                ),
+                *ptr::addr_of!(self.hResult),
+                self.u.dwCommandCode,
+                self.u.dwEventID,
+                *self.lpBuffer
             )
         }
     }

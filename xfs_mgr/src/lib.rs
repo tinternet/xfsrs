@@ -352,7 +352,7 @@ pub extern "stdcall" fn WFSDestroyAppHandle(hApp: HAPP) -> HRESULT {
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFSExecute(hService: HSERVICE, dwCommandd: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
+pub extern "stdcall" fn WFSExecute(hService: HSERVICE, dwCommandd: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, lppResult: *mut LPWFSRESULT) -> HRESULT {
     assert_started!();
     // block_thread!();
     call_async(
@@ -395,7 +395,7 @@ pub extern "stdcall" fn WFSFreeResult(lpResult: LPWFSRESULT) -> HRESULT {
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFSGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQueryDetails: LPVOID, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
+pub extern "stdcall" fn WFSGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQueryDetails: LPVOID, dwTimeOut: DWORD, lppResult: *mut LPWFSRESULT) -> HRESULT {
     assert_started!();
     // block_thread!();
     call_async(
@@ -437,7 +437,7 @@ pub extern "stdcall" fn WFSIsBlocking() -> bool {
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFSLock(hService: HSERVICE, dwTimeOut: DWORD, lppResult: &mut LPWFSRESULT) -> HRESULT {
+pub extern "stdcall" fn WFSLock(hService: HSERVICE, dwTimeOut: DWORD, lppResult: *mut LPWFSRESULT) -> HRESULT {
     assert_started!();
     // block_thread!();
     call_async(WFS_LOCK_COMPLETE, |hwnd, request_id| WFSAsyncLock(hService, dwTimeOut, hwnd, request_id), lppResult)
@@ -922,7 +922,7 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
 }
 
 /// Calls asynchronous function on the current thread.
-fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp_result: &mut LPWFSRESULT) -> HRESULT {
+fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp_result: *mut LPWFSRESULT) -> HRESULT {
     let window = window::SyncWindow::new(message);
     let mut request_id = 0;
 
@@ -954,9 +954,10 @@ fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp
 
         // Check if we received result from the async call
         if let Some(resultptr) = xfs_unwrap!(window.try_receive()) {
-            let result: *mut WFSRESULT = resultptr as *mut _;
-            *lpp_result = result;
-            return unsafe { (*result).hResult };
+            unsafe { *lpp_result = result as LPWFSRESULT };
+            let wfs_result = resultptr as *const WFSRESULT;
+            let wfs_result = unsafe { std::mem::transmute::<*const WFSRESULT, &WFSRESULT>(wfs_result) };
+            return unsafe { ptr::addr_of!(wfs_result.hResult).read_unaligned() };
         }
     }
 }
