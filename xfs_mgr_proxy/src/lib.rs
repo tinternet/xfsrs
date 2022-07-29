@@ -275,8 +275,8 @@ pub unsafe extern "stdcall" fn WFSOpen(
         dwTraceLevel,
         dwTimeOut,
         dwSrvcVersionsRequired,
-        *lpSrvcVersion,
-        *lpSPIVersion,
+        { lpSrvcVersion },
+        { lpSPIVersion },
         *lphService
     );
     let res = (XFS.WFSOpen)(
@@ -298,8 +298,8 @@ pub unsafe extern "stdcall" fn WFSOpen(
         dwTraceLevel,
         dwTimeOut,
         dwSrvcVersionsRequired,
-        *lpSrvcVersion,
-        *lpSPIVersion,
+        { lpSrvcVersion },
+        { lpSPIVersion },
         *lphService
     );
     res
@@ -360,9 +360,9 @@ pub unsafe extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub unsafe extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWFSVERSION) -> HRESULT {
-    trace!("WFSStartUp CAL: dwVersionsRequired: {}, lpWFSVersion: {:?}", dwVersionsRequired, *lpWFSVersion);
+    trace!("WFSStartUp CAL: dwVersionsRequired: {}, lpWFSVersion: {:?}", dwVersionsRequired, { lpWFSVersion });
     let res = (XFS.WFSStartUp)(dwVersionsRequired, lpWFSVersion);
-    trace!("WFSStartUp RES: dwVersionsRequired: {}, lpWFSVersion: {:?}", dwVersionsRequired, *lpWFSVersion);
+    trace!("WFSStartUp RES: dwVersionsRequired: {}, lpWFSVersion: {:?}", dwVersionsRequired, { lpWFSVersion });
     res
 }
 

@@ -238,7 +238,7 @@ unsafe fn test() {
         sz_system_status: [0; WFSDSYSSTATUS_LEN + 1],
     };
     let result = (api.WFSStartUp)(3, &mut version);
-    println!("{}, {:?}", result, version);
+    // println!("{}, {:?}", result, { version });
 
     let lpSrvcVersion: LPWFSVERSION = &mut WFSVERSION {
         w_version: 0,

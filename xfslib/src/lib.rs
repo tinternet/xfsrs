@@ -25,8 +25,7 @@ pub type LPREQUESTID = *mut ULONG;
 pub type HPROVIDER = HANDLE;
 pub type XFSBLOCKINGHOOK = unsafe extern "stdcall" fn() -> bool;
 
-#[derive(Debug)]
-#[repr(C)]
+#[repr(C, packed)]
 pub struct WFSVERSION {
     pub w_version: WORD,
     pub w_low_version: WORD,

@@ -534,30 +534,6 @@ pub extern "stdcall" fn WFSAsyncOpen(
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    // SAFETY: We are not responsible for the memory allocated by the caller.
-    unsafe {
-        *lphService = 0;
-        *lpRequestID = 0;
-
-        // Use ptr::write to avoid dropping of memory allocated by the caller.
-        lpSrvcVersion.write(WFSVERSION {
-            w_version: 0,
-            w_low_version: 0,
-            w_high_version: 0,
-            sz_description: [0; WFSDDESCRIPTION_LEN + 1],
-            sz_system_status: [0; WFSDDESCRIPTION_LEN + 1],
-        });
-
-        // Use ptr::write to avoid dropping of memory allocated by the caller.
-        lpSPIVersion.write(WFSVERSION {
-            w_version: 0,
-            w_low_version: 0,
-            w_high_version: 0,
-            sz_description: [0; WFSDDESCRIPTION_LEN + 1],
-            sz_system_status: [0; WFSDDESCRIPTION_LEN + 1],
-        });
-    }
-
     fn get_value(root: HKEY, path: CString, name: CString) -> Result<String, HRESULT> {
         let mut key = ptr::null_mut();
 
@@ -736,17 +712,21 @@ pub extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWF
     }
 
     let mut version = WFSVERSION {
-        w_version: 0,
-        w_low_version: 0,
-        w_high_version: 0,
+        w_version: Version::new_explicit(3, 0).value(),
+        w_low_version: Version::new_explicit(2, 0).value(),
+        w_high_version: Version::new_explicit(3, 30).value(),
         sz_description: [0; WFSDDESCRIPTION_LEN + 1],
         sz_system_status: [0; WFSDSYSSTATUS_LEN + 1],
     };
 
-    let description = "Rust XFS Manager v2.00 to v3.20".as_bytes();
+    let description = "Rust XFS Manager v2.00 to v3.30".as_bytes();
+    let mut description_array = [0; WFSDDESCRIPTION_LEN + 1];
     for i in 0..std::cmp::min(description.len(), WFSDDESCRIPTION_LEN) {
-        version.sz_description[i] = description[i] as i8;
+        description_array[i] = description[i] as i8;
     }
+
+    let desc_mut = ptr::addr_of_mut!(version.sz_description);
+    unsafe { desc_mut.write_unaligned(description_array) };
 
     // SAFETY: The pointer is not null. Using ptr::write to avoid dropping memory allocated by the caller.
     unsafe {
