@@ -1,4 +1,4 @@
-use std::{ffi::CString, ptr};
+use std::{ffi::CString, mem::size_of, ptr};
 
 use libloading::Symbol;
 use log::LevelFilter;
@@ -14,7 +14,7 @@ use winapi::{
         windef::HWND,
         winerror::HRESULT,
     },
-    um::winnt::LPSTR,
+    um::{minwinbase::SYSTEMTIME, winnt::LPSTR},
 };
 use xfslib::*;
 
@@ -67,17 +67,106 @@ fn init_log() {
     log4rs::init_config(config).unwrap();
 }
 
-fn main() {
-    init_log();
-    let s: &str = "123";
-    let ptr: *const u8 = s.as_ptr();
+pub type WfpOpen = extern "stdcall" fn(
+    hService: HSERVICE,
+    lpszLogicalName: LPSTR,
+    hApp: HAPP,
+    lpszAppID: LPSTR,
+    dwTraceLevel: DWORD,
+    dwTimeOut: DWORD,
+    hWnd: HWND,
+    reqId: REQUESTID,
+    hProvider: HPROVIDER,
+    dwSPIVersionsRequired: DWORD,
+    lpSPIVersion: LPWFSVERSION,
+    dwSrvcVersionsRequired: DWORD,
+    lpSrvcVersion: LPWFSVERSION,
+) -> HRESULT;
 
+mod window;
+
+fn main() {
     unsafe {
-        println!("{}", *ptr.add(1) as char);
-        println!("{}", *ptr.add(2) as char);
-        println!("{}", *ptr as char);
+        let lib = libloading::Library::new(r"C:\Users\bloc4\Downloads\OpenXFS_V0.0.0.5\dll\SPI_LQ2090.dll").unwrap();
+        let open = lib.get::<WfpOpen>(b"WFPOpen").unwrap();
+        let mut lp_spi_version = WFSVERSION {
+            w_version: 0,
+            w_low_version: 0,
+            w_high_version: 0,
+            sz_description: [0; 257],
+            sz_system_status: [0; 257],
+        };
+        let mut lp_srvc_version = WFSVERSION {
+            w_version: 0,
+            w_low_version: 0,
+            w_high_version: 0,
+            sz_description: [0; 257],
+            sz_system_status: [0; 257],
+        };
+        let window = window::SyncWindow::new(0x401);
+        let result = open(
+            32134,
+            "LQ2090\0".as_ptr() as LPSTR,
+            0 as HAPP,
+            "LQ2090\0".as_ptr() as LPSTR,
+            0,
+            0,
+            window.handle(),
+            666666666,
+            std::ptr::null_mut(),
+            0,
+            &mut lp_spi_version,
+            0,
+            &mut lp_srvc_version,
+        );
+        println!("{:?}", result);
+
+        loop {
+            if let Some(result) = window.try_receive().unwrap() {
+                let wfs_result = result as *const WFSRESULT;
+                let wfs_result = std::mem::transmute::<*const WFSRESULT, &WFSRESULT>(wfs_result);
+                assert_eq!(-54, ptr::addr_of!(wfs_result.hResult).read_unaligned());
+                // let wfs_result = result as *mut WFSRESULT;
+                // let wfs_result = &*wfs_result;
+
+                // let brw = std::ptr::addr_of!(wfs_result.RequestID);
+                // let brw2 = std::ptr::addr_of!(wfs_result.hResult);
+                // println!("reques {:#034b}; {}", *brw, *brw);
+                // println!("result {:#034b}; {}", *brw2, *brw2);
+                // println!("expect {:#034b}", -54);
+                // println!("{:?}", size_of::<SYSTEMTIME>());
+
+                // let hmm = result as *mut u8;
+                // let ptr = hmm.add(size_of::<ULONG>()).add(size_of::<HSERVICE>()).add(size_of::<SYSTEMTIME>()).add(2);
+                // println!("ptr    {:#034b}", *(ptr as *mut HRESULT));
+
+                // let another = result as *mut [u8; size_of::<WFSRESULT>()];
+                // let work: WFSRESULT = std::mem::transmute(*another);
+                // println!("hmm    {:#034b}; {}", work.hResult, work.hResult);
+
+                // let bytes = result as *mut [u8; 36];
+                // for byte in &*bytes {
+                //     println!("{:#010b}", byte);
+                // }
+
+                break;
+            }
+        }
     }
+    // init_log();
+    // let s: &str = "123";
+    // let ptr: *const u8 = s.as_ptr();
+
+    // unsafe {
+    //     println!("{}", *ptr.add(1) as char);
+    //     println!("{}", *ptr.add(2) as char);
+    //     println!("{}", *ptr as char);
+    // }
 }
+
+// 0xFFFFFFEA = 11111111 11111111 11111111 11101010
+// 0xFFFFFFFC = 11111111 11111111 11111111 11111100
+// res 0x0000FFFF = 00000000 00000000 11111111 11111111
 
 unsafe fn test_buffers() {
     let lib = libloading::Library::new("msxfs.dll").unwrap();

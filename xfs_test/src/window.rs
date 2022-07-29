@@ -19,7 +19,7 @@ use winapi::{
         },
     },
 };
-
+#[repr(C)]
 struct Message {
     message: u32,
     // w_param: u32,
