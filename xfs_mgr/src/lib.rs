@@ -71,7 +71,7 @@ macro_rules! xfs_unwrap {
 
 macro_rules! xfs_reject {
     ($l:expr) => {{
-        error!("XFS_SUPP {}", stringify!($l));
+        error!(stringify!($l));
         return $l;
     }};
 }
