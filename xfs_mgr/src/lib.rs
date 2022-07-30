@@ -37,7 +37,6 @@ use xfslib::*;
 mod conf;
 mod spi;
 mod supp;
-mod window;
 
 lazy_static! {
     // holds service handles
@@ -872,7 +871,7 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
 
 /// Calls asynchronous function on the current thread.
 fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp_result: *mut LPWFSRESULT) -> HRESULT {
-    let window = window::SyncWindow::new(message);
+    let window = SyncWindow::new(message);
     let mut request_id = 0;
 
     let result = async_fn(window.handle(), &mut request_id);

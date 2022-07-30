@@ -226,6 +226,8 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
 
     #[test]
@@ -235,6 +237,13 @@ mod tests {
         assert_eq!(result, WFS_SUCCESS);
         assert_ne!(buffer, ptr::null_mut());
     }
+
+    #[test]
+    fn test_allocate_fail() {
+        let result = WFMAllocateBuffer(0, WFS_MEM_ZEROINIT, ptr::null_mut());
+        assert_eq!(result, WFS_ERR_INVALID_POINTER);
+    }
+
     #[test]
     fn test_allocate_more() {
         let mut buffer = ptr::null_mut();
@@ -247,12 +256,20 @@ mod tests {
         assert_eq!(result2, WFS_SUCCESS);
         assert_ne!(buffer2, ptr::null_mut());
     }
+
     #[test]
     fn test_allocate_more_fail() {
+        let result = WFMAllocateMore(10, ptr::null_mut(), ptr::null_mut());
+        assert_eq!(result, WFS_ERR_INVALID_POINTER);
+
         let mut buffer = ptr::null_mut();
-        let result = WFMAllocateMore(10, buffer, &mut buffer);
+        let result = WFMAllocateBuffer(10, WFS_MEM_SHARE, &mut buffer);
+        assert_eq!(result, WFS_SUCCESS);
+
+        let result = WFMAllocateMore(10, buffer, ptr::null_mut());
         assert_eq!(result, WFS_ERR_INVALID_POINTER);
     }
+
     #[test]
     fn test_free() {
         let mut buffer = ptr::null_mut();
@@ -266,6 +283,7 @@ mod tests {
         let result = WFMFreeBuffer(buffer);
         assert_eq!(result, WFS_ERR_INVALID_BUFFER);
     }
+
     #[test]
     fn test_free_parent_first() {
         let mut buffer = ptr::null_mut();
@@ -281,25 +299,73 @@ mod tests {
         let result = WFMFreeBuffer(buffer);
         assert_eq!(result, WFS_SUCCESS);
 
+        let result = WFMFreeBuffer(buffer);
+        assert_eq!(result, WFS_ERR_INVALID_BUFFER);
+
         let result = WFMFreeBuffer(buffer2);
         assert_eq!(result, WFS_ERR_INVALID_BUFFER);
     }
-    // #[test]
-    // fn test_free_children_first() {
-    //     let mut buffer = ptr::null_mut();
-    //     let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut buffer);
-    //     assert_eq!(result, WFS_SUCCESS);
-    //     assert_ne!(buffer, ptr::null_mut());
 
-    //     let mut buffer2 = ptr::null_mut();
-    //     let result2 = WFMAllocateMore(10, buffer, &mut buffer2);
-    //     assert_eq!(result2, WFS_SUCCESS);
-    //     assert_ne!(buffer2, ptr::null_mut());
+    #[test]
+    fn test_free_child_first() {
+        let mut parent = ptr::null_mut();
+        let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut parent);
+        assert_eq!(result, WFS_SUCCESS);
+        assert_ne!(parent, ptr::null_mut());
 
-    //     let result = WFMFreeBuffer(buffer2);
-    //     assert_eq!(result, WFS_SUCCESS);
+        let mut child = ptr::null_mut();
+        let result = WFMAllocateMore(10, parent, &mut child);
+        assert_eq!(result, WFS_SUCCESS);
+        assert_ne!(child, ptr::null_mut());
 
-    //     let result = WFMFreeBuffer(buffer);
-    //     assert_eq!(result, WFS_SUCCESS);
-    // }
+        let result = WFMFreeBuffer(child);
+        assert_eq!(result, WFS_ERR_INVALID_BUFFER);
+
+        let result = WFMFreeBuffer(parent);
+        assert_eq!(result, WFS_SUCCESS);
+
+        let result = WFMFreeBuffer(parent);
+        assert_eq!(result, WFS_ERR_INVALID_BUFFER);
+    }
+
+    #[test]
+    fn test_timer() {
+        let window = SyncWindow::new(WFS_TIMER_EVENT);
+        let mut value = 100;
+        let mut timer_id = 0;
+        let result = WFMSetTimer(window.handle(), &mut value as *mut _ as *mut _, 100, &mut timer_id);
+        assert_eq!(result, WFS_SUCCESS);
+        assert_ne!(timer_id, 0);
+
+        let result = WFMKillTimer(timer_id);
+        assert_eq!(result, WFS_SUCCESS);
+
+        let result = WFMKillTimer(timer_id);
+        assert_eq!(result, WFS_ERR_INVALID_TIMER);
+    }
+
+    #[test]
+    fn test_timer_tick() {
+        let window = SyncWindow::new(WFS_TIMER_EVENT);
+        let mut value = 100;
+        let mut timer_id = 0;
+        let result = WFMSetTimer(window.handle(), &mut value as *mut _ as *mut _, 1, &mut timer_id);
+        assert_eq!(result, WFS_SUCCESS);
+        assert_ne!(timer_id, 0);
+
+        let start = Instant::now();
+        loop {
+            if let Some(response) = window.try_receive().unwrap() {
+                let response = unsafe { &*(response as *mut i32) };
+                assert_eq!(response, &value);
+                break;
+            }
+            if start.elapsed().as_secs() > 1 {
+                panic!("1 ms timer did not finish for more than 1 second");
+            }
+        }
+
+        let result = WFMKillTimer(timer_id);
+        assert_eq!(result, WFS_ERR_INVALID_TIMER, "Timer must be automatically deallocated");
+    }
 }

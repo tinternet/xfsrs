@@ -9,10 +9,12 @@ use winapi::um::winnt::{HANDLE, HRESULT};
 pub use constants::*;
 pub use errors::*;
 pub use version::*;
+pub use window::*;
 
 mod constants;
 mod errors;
 mod version;
+mod window;
 
 /// Unwraps the result of a WFS call and returns the HRESULT on error.
 /// The error is logged to the log file.
