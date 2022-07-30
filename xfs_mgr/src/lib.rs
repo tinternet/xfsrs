@@ -3,7 +3,7 @@ use std::{
     ffi::{CStr, CString},
     mem, ptr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicPtr, Ordering},
         Mutex,
     },
 };
@@ -52,7 +52,7 @@ lazy_static! {
     static ref BLOCKED_THREADS: Mutex<HashMap<DWORD, bool>> = Mutex::new(HashMap::new());
 
     // holds application defined blocking hook
-    static ref BLOCKING_HOOK: Mutex<Option<XFSBLOCKINGHOOK>> = Mutex::new(None);
+    static ref BLOCKING_HOOK: AtomicPtr<XFSBLOCKINGHOOK> = AtomicPtr::new(ptr::null_mut());
 }
 
 /// Asserts that the WFSStartup function has been called.
@@ -163,31 +163,10 @@ pub extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT {
 pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
     // assert_unblocked!();
     STARTED.store(false, Ordering::SeqCst);
-
-    {
-        let mut services = xfs_unwrap!(SERVICES.lock());
-        services.iter_mut().filter_map(|s| s.take()).for_each(drop);
-    }
-
-    {
-        let mut handles = xfs_unwrap!(APP_HANDLES.lock());
-        *handles = [false; 8192];
-    }
-
-    {
-        let mut blocked_threads = xfs_unwrap!(BLOCKED_THREADS.lock());
-        *blocked_threads = HashMap::new();
-    }
-
-    {
-        let mut blocking_hook = xfs_unwrap!(BLOCKING_HOOK.lock());
-        *blocking_hook = None;
-    }
-
-    // unsafe {
-    //     (XFS_SUPP_CLEANUP)();
-    // }
-
+    BLOCKING_HOOK.store(ptr::null_mut(), Ordering::SeqCst);
+    xfs_unwrap!(BLOCKED_THREADS.lock()).clear();
+    *xfs_unwrap!(APP_HANDLES.lock()) = [false; 8192];
+    xfs_unwrap!(SERVICES.lock()).iter_mut().filter_map(|s| s.take()).for_each(drop);
     WFS_SUCCESS
 }
 
@@ -636,23 +615,13 @@ pub extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD
 #[allow(non_snake_case)]
 #[no_mangle]
 #[logfn(TRACE)]
-// #[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrevFunc: *mut XFSBLOCKINGHOOK) -> HRESULT {
+pub extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: *mut XFSBLOCKINGHOOK, lppPrevFunc: *mut *mut XFSBLOCKINGHOOK) -> HRESULT {
     assert_started!();
     // assert_unblocked!();
-
-    let mut blocking_hook = xfs_unwrap!(BLOCKING_HOOK.lock());
-
-    match *blocking_hook {
-        Some(prev) => unsafe {
-            lppPrevFunc.write(prev);
-            *blocking_hook = Some(lpBlockFunc);
-        },
-        None => {
-            *blocking_hook = Some(lpBlockFunc);
-        }
+    let previous = BLOCKING_HOOK.swap(lpBlockFunc, Ordering::SeqCst);
+    if !previous.is_null() {
+        unsafe { lppPrevFunc.write(previous) };
     }
-
     WFS_SUCCESS
 }
 
@@ -663,7 +632,6 @@ pub extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrev
 pub extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWFSVERSION) -> HRESULT {
     // TODO: debug why diebold works with pointer here
     // let range = VersionRange::new(dwVersionsRequired);
-
     // if range.start > range.end {
     //     xfs_reject!(WFS_ERR_INTERNAL_ERROR);
     // }
@@ -676,36 +644,26 @@ pub extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWF
     // if lpWFSVersion.is_null() {
     //     xfs_reject!(WFS_ERR_INVALID_POINTER);
     // }
-
-    let mut version = WFSVERSION {
-        w_version: Version::new_explicit(3, 0).value(),
-        w_low_version: Version::new_explicit(2, 0).value(),
-        w_high_version: Version::new_explicit(3, 30).value(),
-        sz_description: [0; WFSDDESCRIPTION_LEN + 1],
-        sz_system_status: [0; WFSDSYSSTATUS_LEN + 1],
-    };
-
-    let description = "Rust XFS Manager v2.00 to v3.30".as_bytes();
-    let mut description_array = [0; WFSDDESCRIPTION_LEN + 1];
-    for i in 0..std::cmp::min(description.len(), WFSDDESCRIPTION_LEN) {
-        description_array[i] = description[i] as i8;
-    }
-
-    let desc_mut = ptr::addr_of_mut!(version.sz_description);
-    unsafe { desc_mut.write_unaligned(description_array) };
-
-    // SAFETY: The pointer is not null. Using ptr::write to avoid dropping memory allocated by the caller.
-    unsafe {
-        lpWFSVersion.write(version);
-    }
-
-    if STARTED.load(Ordering::SeqCst) {
+    if STARTED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return WFS_ERR_ALREADY_STARTED;
     }
-
-    STARTED.store(true, Ordering::SeqCst);
-    trace!("XFS STARTUP DONE");
-
+    if !lpWFSVersion.is_null() {
+        let description = "Rust XFS Manager v2.00 to v3.30".as_bytes();
+        let mut sz_description = [0i8; WFSDDESCRIPTION_LEN + 1];
+        for i in 0..description.len() {
+            sz_description[i] = description[i] as i8;
+        }
+        let version = WFSVERSION {
+            w_version: Version::new_explicit(3, 0).value(),
+            w_low_version: Version::new_explicit(2, 0).value(),
+            w_high_version: Version::new_explicit(3, 30).value(),
+            sz_description,
+            sz_system_status: [0; WFSDSYSSTATUS_LEN + 1],
+        };
+        unsafe {
+            lpWFSVersion.write(version);
+        }
+    }
     WFS_SUCCESS
 }
 
@@ -716,8 +674,7 @@ pub extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWF
 pub extern "stdcall" fn WFSUnhookBlockingHook() -> HRESULT {
     assert_started!();
     // assert_unblocked!();
-    let mut blocking_hook = xfs_unwrap!(BLOCKING_HOOK.lock());
-    *blocking_hook = None;
+    BLOCKING_HOOK.store(ptr::null_mut(), Ordering::SeqCst);
     WFS_SUCCESS
 }
 
@@ -738,15 +695,12 @@ pub extern "stdcall" fn WFSUnlock(hService: HSERVICE) -> HRESULT {
 pub extern "stdcall" fn WFSAsyncUnlock(hService: HSERVICE, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     assert_started!();
     // assert_unblocked!();
-
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = get_service_req!(hService, services);
-
     let wfp_unlock = unsafe {
         lpRequestID.write(service.request_id as u32);
         xfs_unwrap!(service.library.get::<spi::WFPUnlock>(b"WFPUnlock"))
     };
-
     wfp_unlock(hService, hWnd, unsafe { *lpRequestID })
 }
 
@@ -756,16 +710,11 @@ pub extern "stdcall" fn WFSAsyncUnlock(hService: HSERVICE, hWnd: HWND, lpRequest
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMGetTraceLevel(hService: HSERVICE, lpdwTraceLevel: LPDWORD) -> HRESULT {
     assert_started!();
-
     let services = xfs_unwrap!(SERVICES.lock());
-
     if let Some(service) = services.get(hService as usize - 1).and_then(|service| service.as_ref()) {
-        unsafe {
-            lpdwTraceLevel.write(service.trace_level);
-        }
+        unsafe { lpdwTraceLevel.write(service.trace_level) };
         return WFS_SUCCESS;
     }
-
     xfs_reject!(WFS_ERR_INVALID_HSERVICE);
 }
 
@@ -834,20 +783,16 @@ pub unsafe extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTime
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMSetTraceLevel(hService: HSERVICE, dwTraceLevel: DWORD) -> HRESULT {
     assert_started!();
-
     if hService == 0 {
         xfs_reject!(WFS_ERR_INVALID_HSERVICE);
     }
-
     let mut services = xfs_unwrap!(SERVICES.lock());
     let service = match services.get_mut(hService as usize - 1).and_then(|service| service.as_mut()) {
         Some(service) => service,
         None => xfs_reject!(WFS_ERR_INVALID_HSERVICE),
     };
-
     service.trace_level = dwTraceLevel;
-    let wfp_set_trace_level = unsafe { xfs_unwrap!(service.library.get::<spi::WFPSetTraceLevel>(b"WFPSetTraceLevel")) };
-    return wfp_set_trace_level(hService, dwTraceLevel);
+    unsafe { xfs_unwrap!(service.library.get::<spi::WFPSetTraceLevel>(b"WFPSetTraceLevel"))(hService, dwTraceLevel) }
 }
 
 #[allow(non_snake_case)]
@@ -862,7 +807,6 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
             .appender(Appender::builder().build("logfile", Box::new(logfile)))
             .build(Root::builder().appender("logfile").build(LevelFilter::Trace))
             .unwrap();
-
         log4rs::init_config(config).unwrap();
         trace!("XFS DLL INIT");
     }
@@ -873,22 +817,17 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
 fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp_result: *mut LPWFSRESULT) -> HRESULT {
     let window = SyncWindow::new(message);
     let mut request_id = 0;
-
     let result = async_fn(window.handle(), &mut request_id);
-
     if result != WFS_SUCCESS {
         return result;
     }
-
     loop {
         // Execute application hook or default hook dispatching window messages
-        match *xfs_unwrap!(BLOCKING_HOOK.lock()) {
-            Some(hook) => unsafe {
-                hook();
-            },
-            None => unsafe {
-                default_block_hook();
-            },
+        let hook = BLOCKING_HOOK.load(Ordering::SeqCst);
+        if hook.is_null() {
+            unsafe { default_block_hook() };
+        } else {
+            unsafe { (*hook)() };
         }
 
         let thread_id = unsafe { GetCurrentThreadId() };
@@ -911,10 +850,11 @@ fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp
 }
 
 /// Default blocking hook for synchronous calls
-unsafe fn default_block_hook() {
+unsafe fn default_block_hook() -> bool {
     let mut msg = mem::zeroed();
     if GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) != 0 {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    true
 }
