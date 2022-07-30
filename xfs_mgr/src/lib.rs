@@ -797,19 +797,8 @@ pub extern "stdcall" fn WFMSetTraceLevel(hService: HSERVICE, dwTraceLevel: DWORD
 
 #[allow(non_snake_case)]
 #[no_mangle]
-pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPVOID) -> bool {
-    if fdw_reason == DLL_PROCESS_ATTACH {
-        let logfile = FileAppender::builder()
-            .encoder(Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S)} {l} {L} - {m}\n")))
-            .build("$ENV{Public}\\XFS_MGR.log")
-            .unwrap();
-        let config = Config::builder()
-            .appender(Appender::builder().build("logfile", Box::new(logfile)))
-            .build(Root::builder().appender("logfile").build(LevelFilter::Trace))
-            .unwrap();
-        log4rs::init_config(config).unwrap();
-        trace!("XFS DLL INIT");
-    }
+pub extern "stdcall" fn DllMain(hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPVOID) -> bool {
+    module_init(hinst_dll, fdw_reason);
     true
 }
 

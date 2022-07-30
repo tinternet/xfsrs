@@ -1,5 +1,3 @@
-use std::{fmt, ptr};
-
 use winapi::ctypes::c_char;
 use winapi::shared::minwindef::{DWORD, LPVOID, WORD};
 use winapi::shared::ntdef::{ULONG, USHORT};
@@ -8,11 +6,13 @@ use winapi::um::winnt::{HANDLE, HRESULT};
 
 pub use constants::*;
 pub use errors::*;
+pub use util::*;
 pub use version::*;
 pub use window::*;
 
 mod constants;
 mod errors;
+mod util;
 mod version;
 mod window;
 
@@ -60,8 +60,8 @@ pub struct WFSVERSION {
     pub sz_system_status: [c_char; WFSDSYSSTATUS_LEN + 1],
 }
 
-#[repr(C)]
 #[allow(non_snake_case)]
+#[repr(C)]
 pub union U {
     pub dwCommandCode: DWORD,
     pub dwEventID: DWORD,
@@ -76,25 +76,4 @@ pub struct WFSRESULT {
     pub hResult: HRESULT,
     pub u: U,
     pub lpBuffer: LPVOID,
-}
-
-impl fmt::Debug for WFSRESULT {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        unsafe {
-            write!(
-                f,
-                "RequestID: {}, hService: {}, tsTimestamp: {}, hResult: {}, u.dwCommandCode: {}, u.dwEventID: {}, lpBuffer: {:?}",
-                *ptr::addr_of!(self.RequestID),
-                *ptr::addr_of!(self.hService),
-                format!(
-                    "{}-{}-{} {}:{}:{}",
-                    self.tsTimestamp.wYear, self.tsTimestamp.wMonth, self.tsTimestamp.wDay, self.tsTimestamp.wHour, self.tsTimestamp.wMinute, self.tsTimestamp.wSecond,
-                ),
-                *ptr::addr_of!(self.hResult),
-                self.u.dwCommandCode,
-                self.u.dwEventID,
-                *self.lpBuffer
-            )
-        }
-    }
 }

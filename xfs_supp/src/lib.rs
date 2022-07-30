@@ -170,19 +170,14 @@ pub extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
     }
 
     let timer = TIMERS[wTimerID as usize - 1].swap(ptr::null_mut(), Ordering::SeqCst);
-
-    // Verify that the timer was not destroyed
     if timer.is_null() {
         xfs_reject!(WFS_ERR_INVALID_TIMER);
     }
 
     // SAFETY: we checked that timer is not null and we know it's not dropped yet since we are using atomic swap
     let timer = unsafe { Box::from_raw(timer) };
-
     // SAFETY: all parameters are valid
-    unsafe {
-        KillTimer(timer.hwnd, wTimerID as usize);
-    }
+    unsafe { KillTimer(timer.hwnd, wTimerID as usize) };
 
     WFS_SUCCESS
 }
@@ -254,20 +249,8 @@ pub extern "stdcall" fn WFMSetTraceLevel(_hService: HSERVICE, _dwTraceLevel: DWO
 
 #[allow(non_snake_case)]
 #[no_mangle]
-pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPVOID) -> bool {
-    if fdw_reason == DLL_PROCESS_ATTACH {
-        let logfile = FileAppender::builder()
-            .encoder(Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S)} {l} {L} - {m}\n")))
-            .build("$ENV{Public}\\XFS_SUPP.log")
-            .unwrap();
-        let config = Config::builder()
-            .appender(Appender::builder().build("logfile", Box::new(logfile)))
-            .build(Root::builder().appender("logfile").build(LevelFilter::Trace))
-            .unwrap();
-
-        log4rs::init_config(config).unwrap();
-        trace!("XFS SUPP DLL INIT");
-    }
+pub extern "stdcall" fn DllMain(hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPVOID) -> bool {
+    module_init(hinst_dll, fdw_reason);
     true
 }
 
