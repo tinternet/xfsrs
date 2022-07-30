@@ -5,11 +5,7 @@ use std::sync::Arc;
 use std::{collections::HashMap, sync::Mutex};
 
 use lazy_static::lazy_static;
-use log::{error, trace, LevelFilter};
-use log4rs::append::file::FileAppender;
-use log4rs::config::{Appender, Root};
-use log4rs::encode::pattern::PatternEncoder;
-use log4rs::Config;
+use log::{error, trace};
 use log_derive::{logfn, logfn_inputs};
 use winapi::shared::basetsd::UINT_PTR;
 use winapi::shared::minwindef::UINT;
@@ -20,7 +16,7 @@ use winapi::{
         windef::HWND,
         winerror::HRESULT,
     },
-    um::winnt::{DLL_PROCESS_ATTACH, LPSTR},
+    um::winnt::LPSTR,
 };
 use xfslib::*;
 

@@ -9,13 +9,7 @@ use std::{
 };
 
 use lazy_static::lazy_static;
-use log::{error, trace, LevelFilter};
-use log4rs::{
-    append::file::FileAppender,
-    config::{Appender, Root},
-    encode::pattern::PatternEncoder,
-    Config,
-};
+use log::{error, trace};
 use log_derive::{logfn, logfn_inputs};
 use winapi::{
     shared::{
@@ -25,7 +19,7 @@ use winapi::{
     },
     um::{
         processthreadsapi::GetCurrentThreadId,
-        winnt::{DLL_PROCESS_ATTACH, LPSTR},
+        winnt::LPSTR,
         winuser::{DispatchMessageW, GetMessageW, TranslateMessage},
     },
 };

@@ -3,13 +3,7 @@ use std::{
     ptr,
 };
 
-use log::{error, trace, LevelFilter};
-use log4rs::{
-    append::file::FileAppender,
-    config::{Appender, Root},
-    encode::pattern::PatternEncoder,
-    Config,
-};
+use log::error;
 use log_derive::{logfn, logfn_inputs};
 use winapi::{
     shared::{
@@ -17,10 +11,10 @@ use winapi::{
         winerror::{ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE, ERROR_KEY_HAS_CHILDREN, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HRESULT},
     },
     um::{
-        winnt::{DLL_PROCESS_ATTACH, KEY_ALL_ACCESS, LPSTR, REG_CREATED_NEW_KEY, REG_OPENED_EXISTING_KEY, REG_OPTION_NON_VOLATILE, REG_SZ},
+        winnt::{KEY_ALL_ACCESS, LPSTR, REG_CREATED_NEW_KEY, REG_OPENED_EXISTING_KEY, REG_OPTION_NON_VOLATILE, REG_SZ},
         winreg::{
-            RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegGetValueA, RegOpenKeyA, RegOpenKeyExA, RegSetValueExA, HKEY_CLASSES_ROOT,
-            HKEY_LOCAL_MACHINE, HKEY_USERS, RRF_RT_ANY,
+            RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegGetValueA, RegOpenKeyA, RegSetValueExA, HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE, HKEY_USERS,
+            RRF_RT_ANY,
         },
     },
 };
