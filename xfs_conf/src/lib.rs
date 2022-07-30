@@ -14,13 +14,13 @@ use log_derive::{logfn, logfn_inputs};
 use winapi::{
     shared::{
         minwindef::{DWORD, HINSTANCE, HKEY, LPDWORD, LPVOID, PFILETIME, PHKEY},
-        winerror::{ERROR_FILE_NOT_FOUND, ERROR_KEY_HAS_CHILDREN, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HRESULT},
+        winerror::{ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE, ERROR_KEY_HAS_CHILDREN, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HRESULT},
     },
     um::{
         winnt::{DLL_PROCESS_ATTACH, KEY_ALL_ACCESS, LPSTR, REG_CREATED_NEW_KEY, REG_OPENED_EXISTING_KEY, REG_OPTION_NON_VOLATILE, REG_SZ},
         winreg::{
-            RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegGetValueA, RegOpenKeyA, RegSetValueExA, HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE, HKEY_USERS,
-            RRF_RT_ANY,
+            RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegGetValueA, RegOpenKeyA, RegOpenKeyExA, RegSetValueExA, HKEY_CLASSES_ROOT,
+            HKEY_LOCAL_MACHINE, HKEY_USERS, RRF_RT_ANY,
         },
     },
 };
@@ -34,6 +34,7 @@ pub unsafe extern "stdcall" fn WFMCloseKey(hKey: HKEY) -> HRESULT {
     match RegCloseKey(hKey) as u32 {
         ERROR_SUCCESS => WFS_SUCCESS,
         ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
+        ERROR_INVALID_HANDLE => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
         _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
     }
 }
@@ -43,11 +44,10 @@ pub unsafe extern "stdcall" fn WFMCloseKey(hKey: HKEY) -> HRESULT {
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMCreateKey(hKey: HKEY, lpszSubKey: LPSTR, phkResult: PHKEY, lpdwDisposition: LPDWORD) -> HRESULT {
-    if lpszSubKey.is_null() {
+    if lpszSubKey.is_null() || lpdwDisposition.is_null() {
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    *lpdwDisposition = 0;
     let dw_disposition: LPDWORD = 0 as LPDWORD;
 
     let (sub_key, h_key) = match hKey {
@@ -73,11 +73,11 @@ pub unsafe extern "stdcall" fn WFMCreateKey(hKey: HKEY, lpszSubKey: LPSTR, phkRe
     ) as u32
     {
         ERROR_SUCCESS => {
-            *lpdwDisposition = match *dw_disposition {
+            lpdwDisposition.write(match *dw_disposition {
                 REG_CREATED_NEW_KEY => WFS_CFG_CREATED_NEW_KEY,
                 REG_OPENED_EXISTING_KEY => WFS_CFG_OPENED_EXISTING_KEY,
                 _ => 0,
-            };
+            });
             WFS_SUCCESS
         }
         ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
@@ -256,15 +256,23 @@ mod tests {
         let mut key: HKEY = ptr::null_mut();
         let path = CString::new("LOGICAL_SERVICES\\cwd").unwrap();
         let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
-        assert_eq!(result, 0);
+        assert_eq!(result, WFS_SUCCESS);
+
+        let result = unsafe { WFMCloseKey(key) };
+        assert_eq!(result, WFS_SUCCESS);
     }
+
     #[test]
     fn test_open_key_fail() {
         let mut key: HKEY = ptr::null_mut();
         let path = CString::new("LOGICAL_SERVICES\\gfdggfshfgsdfgs").unwrap();
         let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
         assert_eq!(result, WFS_ERR_CFG_INVALID_HKEY);
+
+        let result = unsafe { WFMCloseKey(key) };
+        assert_eq!(result, WFS_ERR_CFG_INVALID_HKEY);
     }
+
     #[test]
     fn test_query_value() {
         let mut lgl_prov_path = [0u8; MAX_PATH];
@@ -279,7 +287,11 @@ mod tests {
         let result = unsafe { WFMQueryValue(key, name.as_ptr() as *mut _, lgl_prov_path.as_mut_ptr() as *mut _, len) };
         assert_eq!(result, WFS_SUCCESS);
         assert_eq!(&lgl_prov_path[..*len as usize], b"serviceprovider");
+
+        let result = unsafe { WFMCloseKey(key) };
+        assert_eq!(result, WFS_SUCCESS);
     }
+
     #[test]
     fn test_query_value_fail() {
         let mut lgl_prov_path = [0u8; MAX_PATH];
@@ -293,5 +305,25 @@ mod tests {
         let len = &mut (MAX_PATH as u32);
         let result = unsafe { WFMQueryValue(key, name.as_ptr() as *mut _, lgl_prov_path.as_mut_ptr() as *mut _, len) };
         assert_eq!(result, WFS_ERR_CFG_INVALID_NAME);
+
+        let result = unsafe { WFMCloseKey(key) };
+        assert_eq!(result, WFS_SUCCESS);
     }
+
+    // #[test]
+    // fn test_create_delete() {
+    //     let mut key: HKEY = ptr::null_mut();
+    //     let path = CString::new("LOGICAL_SERVICES\\cwd").unwrap();
+    //     let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
+    //     assert_eq!(result, WFS_SUCCESS);
+
+    //     let name = CString::new("some_name").unwrap();
+    //     let mut new: HKEY = ptr::null_mut();
+    //     let result = unsafe { WFMCreateKey(key, name.as_ptr() as *mut i8, &mut new, ptr::null_mut()) };
+    //     assert_eq!(result, WFS_SUCCESS);
+    //     assert_ne!(new, ptr::null_mut());
+
+    //     let result = unsafe { WFMCloseKey(key) };
+    //     assert_eq!(result, WFS_SUCCESS);
+    // }
 }

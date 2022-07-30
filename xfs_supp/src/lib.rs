@@ -1,6 +1,7 @@
 use std::ffi::CStr;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::{collections::HashMap, sync::Mutex};
 
 use lazy_static::lazy_static;
@@ -15,7 +16,6 @@ use winapi::shared::minwindef::UINT;
 use winapi::um::winuser::{KillTimer, PostMessageA, SetTimer};
 use winapi::{
     shared::{
-        basetsd::ULONG_PTR,
         minwindef::{DWORD, HINSTANCE, LPVOID, LPWORD, ULONG, WORD},
         windef::HWND,
         winerror::HRESULT,
@@ -26,28 +26,88 @@ use xfslib::*;
 
 lazy_static! {
     // holds application & service providers buffers
-    static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Allocation>> = Mutex::new(HashMap::new());
-
+    static ref HEAP: Mutex<Heap> = Mutex::new(Heap::new());
     // holds application timers
     static ref TIMERS: Vec<AtomicPtr<Timer>> = (0..65535).map(|_| AtomicPtr::new(ptr::null_mut())).collect();
 }
 
-struct Allocation {
-    _buffer: Vec<u8>,
-    extended: Vec<Vec<u8>>,
-    flags: ULONG,
-}
-
-impl Allocation {
-    fn new(buffer: Vec<u8>, flags: ULONG) -> Self {
-        let extended = vec![];
-        Self { _buffer: buffer, extended, flags }
-    }
-}
+const MAX_HEAP_SIZE: usize = 1 * 1000 * 1000 * 1000; // 1 GB
 
 struct Timer {
     hwnd: HWND,
     context: LPVOID,
+}
+
+struct Heap {
+    allocations: HashMap<usize, Allocation>,
+    total_bytes: Arc<AtomicUsize>,
+}
+
+struct Allocation {
+    buffer: Vec<u8>,
+    flags: ULONG,
+    child: Vec<Allocation>,
+    heap: Arc<AtomicUsize>,
+}
+
+impl Allocation {
+    fn new(buffer: Vec<u8>, flags: ULONG, heap: Arc<AtomicUsize>) -> Self {
+        let child = Vec::with_capacity(0);
+        Self { buffer, flags, child, heap }
+    }
+}
+
+impl Drop for Allocation {
+    fn drop(&mut self) {
+        self.heap.fetch_sub(self.buffer.len(), Ordering::SeqCst);
+    }
+}
+
+unsafe impl Send for Heap {}
+
+impl Heap {
+    fn new() -> Self {
+        let allocations = HashMap::new();
+        let total_bytes = Arc::new(AtomicUsize::new(0));
+        Heap { allocations, total_bytes }
+    }
+
+    fn try_allocate(&mut self, size: usize, flags: ULONG) -> Result<Allocation, HRESULT> {
+        let new_size = self.total_bytes.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+            value.checked_add(size).and_then(|new| if new > MAX_HEAP_SIZE { None } else { Some(new) })
+        });
+        if new_size.is_err() {
+            return Err(WFS_ERR_OUT_OF_MEMORY);
+        }
+        let buffer = vec![0; size];
+        let allocation = Allocation::new(buffer, flags, self.total_bytes.clone());
+        Ok(allocation)
+    }
+
+    fn allocate_buffer(&mut self, size: usize, flags: ULONG) -> Result<LPVOID, HRESULT> {
+        let mut allocation = self.try_allocate(size, flags)?;
+        let pointer = allocation.buffer.as_mut_ptr() as LPVOID;
+        self.allocations.insert(pointer as usize, allocation);
+        Ok(pointer)
+    }
+
+    fn allocate_more(&mut self, size: usize, parent_buffer: LPVOID) -> Result<LPVOID, HRESULT> {
+        let flags = match self.allocations.get(&(parent_buffer as usize)) {
+            Some(allocation) => allocation.flags,
+            None => return Err(WFS_ERR_INVALID_BUFFER),
+        };
+        let mut allocation = self.try_allocate(size, flags)?;
+        let pointer = allocation.buffer.as_mut_ptr() as LPVOID;
+        self.allocations.get_mut(&(parent_buffer as usize)).unwrap().child.push(allocation);
+        Ok(pointer)
+    }
+
+    fn deallocate(&mut self, buffer: LPVOID) -> Result<(), HRESULT> {
+        if self.allocations.remove(&(buffer as usize)).is_none() {
+            return Err(WFS_ERR_INVALID_BUFFER);
+        }
+        Ok(())
+    }
 }
 
 #[allow(non_snake_case)]
@@ -58,18 +118,12 @@ pub extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvDat
     if lppvData.is_null() {
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
-
-    let mut buffer: Vec<u8> = match ulFlags & WFS_MEM_ZEROINIT {
-        0 => vec![0; ulSize as usize],
-        _ => vec![0; ulSize as usize],
+    let mut heap = xfs_unwrap!(HEAP.lock());
+    let buffer = match heap.allocate_buffer(ulSize as usize, ulFlags) {
+        Ok(buffer) => buffer,
+        Err(error) => return error,
     };
-
-    let ptr: *mut u8 = buffer.as_mut_ptr();
-    // SAFETY: we know that lppvData is not null
-    unsafe { lppvData.write(ptr as *mut _) };
-
-    let allocation = Allocation::new(buffer, ulFlags);
-    xfs_unwrap!(BUFFERS.lock()).insert(ptr as ULONG_PTR, allocation);
+    unsafe { lppvData.write(buffer) };
     WFS_SUCCESS
 }
 
@@ -81,21 +135,12 @@ pub extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppv
     if lppvData.is_null() || lpvOriginal.is_null() {
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
-
-    let mut buffers = xfs_unwrap!(BUFFERS.lock());
-    let allocation = match buffers.get_mut(&(lpvOriginal as ULONG_PTR)) {
-        Some(allocation) => allocation,
-        None => xfs_reject!(WFS_ERR_INVALID_BUFFER),
+    let mut heap = xfs_unwrap!(HEAP.lock());
+    let buffer = match heap.allocate_more(ulSize as usize, lpvOriginal) {
+        Ok(buffer) => buffer,
+        Err(error) => return error,
     };
-    let mut buffer: Vec<u8> = match allocation.flags & WFS_MEM_ZEROINIT {
-        0 => vec![0; ulSize as usize],
-        _ => vec![0; ulSize as usize],
-    };
-
-    // SAFETY: we know that lppvData is not null
-    unsafe { lppvData.write(buffer.as_mut_ptr() as *mut _) };
-
-    allocation.extended.push(buffer);
+    unsafe { lppvData.write(buffer) };
     WFS_SUCCESS
 }
 
@@ -107,10 +152,12 @@ pub extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
     if lpvData.is_null() {
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
-    if xfs_unwrap!(BUFFERS.lock()).remove(&(lpvData as ULONG_PTR)).is_none() {
-        xfs_reject!(WFS_ERR_INVALID_BUFFER);
+    let mut heap = xfs_unwrap!(HEAP.lock());
+
+    match heap.deallocate(lpvData) {
+        Ok(_) => WFS_SUCCESS,
+        Err(error) => error,
     }
-    WFS_SUCCESS
 }
 
 #[allow(non_snake_case)]
@@ -232,100 +279,37 @@ mod tests {
 
     #[test]
     fn test_allocate() {
-        let mut buffer = ptr::null_mut();
-        let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut buffer);
-        assert_eq!(result, WFS_SUCCESS);
-        assert_ne!(buffer, ptr::null_mut());
+        for _ in 0..100000 {
+            let mut parent = ptr::null_mut();
+            let mut child = ptr::null_mut();
+            assert_eq!(WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut parent), WFS_SUCCESS);
+            assert_eq!(WFMAllocateMore(MAX_HEAP_SIZE as u32 + 1, parent, &mut child), WFS_ERR_OUT_OF_MEMORY);
+            assert_eq!(WFMAllocateMore(10, parent, &mut child), WFS_SUCCESS);
+            assert_ne!(parent, ptr::null_mut());
+            assert_ne!(child, ptr::null_mut());
+            assert_eq!(WFMFreeBuffer(child), WFS_ERR_INVALID_BUFFER);
+            assert_eq!(WFMFreeBuffer(parent), WFS_SUCCESS);
+            assert_eq!(WFMFreeBuffer(parent), WFS_ERR_INVALID_BUFFER);
+        }
+        assert_eq!(HEAP.lock().unwrap().allocations.len(), 0);
+        assert_eq!(HEAP.lock().unwrap().total_bytes.load(Ordering::SeqCst), 0);
     }
 
     #[test]
     fn test_allocate_fail() {
-        let result = WFMAllocateBuffer(0, WFS_MEM_ZEROINIT, ptr::null_mut());
-        assert_eq!(result, WFS_ERR_INVALID_POINTER);
+        assert_eq!(WFMAllocateBuffer(20, WFS_MEM_ZEROINIT, ptr::null_mut()), WFS_ERR_INVALID_POINTER);
     }
 
     #[test]
-    fn test_allocate_more() {
+    fn test_allocate_fail_oom() {
         let mut buffer = ptr::null_mut();
-        let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut buffer);
-        assert_eq!(result, WFS_SUCCESS);
-        assert_ne!(buffer, ptr::null_mut());
-
-        let mut buffer2 = ptr::null_mut();
-        let result2 = WFMAllocateMore(10, buffer, &mut buffer2);
-        assert_eq!(result2, WFS_SUCCESS);
-        assert_ne!(buffer2, ptr::null_mut());
+        assert_eq!(WFMAllocateBuffer(MAX_HEAP_SIZE as u32 + 1, WFS_MEM_ZEROINIT, &mut buffer), WFS_ERR_OUT_OF_MEMORY);
     }
 
     #[test]
     fn test_allocate_more_fail() {
-        let result = WFMAllocateMore(10, ptr::null_mut(), ptr::null_mut());
-        assert_eq!(result, WFS_ERR_INVALID_POINTER);
-
-        let mut buffer = ptr::null_mut();
-        let result = WFMAllocateBuffer(10, WFS_MEM_SHARE, &mut buffer);
-        assert_eq!(result, WFS_SUCCESS);
-
-        let result = WFMAllocateMore(10, buffer, ptr::null_mut());
-        assert_eq!(result, WFS_ERR_INVALID_POINTER);
-    }
-
-    #[test]
-    fn test_free() {
-        let mut buffer = ptr::null_mut();
-        let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut buffer);
-        assert_eq!(result, WFS_SUCCESS);
-        assert_ne!(buffer, ptr::null_mut());
-
-        let result = WFMFreeBuffer(buffer);
-        assert_eq!(result, WFS_SUCCESS);
-
-        let result = WFMFreeBuffer(buffer);
-        assert_eq!(result, WFS_ERR_INVALID_BUFFER);
-    }
-
-    #[test]
-    fn test_free_parent_first() {
-        let mut buffer = ptr::null_mut();
-        let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut buffer);
-        assert_eq!(result, WFS_SUCCESS);
-        assert_ne!(buffer, ptr::null_mut());
-
-        let mut buffer2 = ptr::null_mut();
-        let result2 = WFMAllocateMore(10, buffer, &mut buffer2);
-        assert_eq!(result2, WFS_SUCCESS);
-        assert_ne!(buffer2, ptr::null_mut());
-
-        let result = WFMFreeBuffer(buffer);
-        assert_eq!(result, WFS_SUCCESS);
-
-        let result = WFMFreeBuffer(buffer);
-        assert_eq!(result, WFS_ERR_INVALID_BUFFER);
-
-        let result = WFMFreeBuffer(buffer2);
-        assert_eq!(result, WFS_ERR_INVALID_BUFFER);
-    }
-
-    #[test]
-    fn test_free_child_first() {
-        let mut parent = ptr::null_mut();
-        let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut parent);
-        assert_eq!(result, WFS_SUCCESS);
-        assert_ne!(parent, ptr::null_mut());
-
-        let mut child = ptr::null_mut();
-        let result = WFMAllocateMore(10, parent, &mut child);
-        assert_eq!(result, WFS_SUCCESS);
-        assert_ne!(child, ptr::null_mut());
-
-        let result = WFMFreeBuffer(child);
-        assert_eq!(result, WFS_ERR_INVALID_BUFFER);
-
-        let result = WFMFreeBuffer(parent);
-        assert_eq!(result, WFS_SUCCESS);
-
-        let result = WFMFreeBuffer(parent);
-        assert_eq!(result, WFS_ERR_INVALID_BUFFER);
+        assert_eq!(WFMAllocateMore(10, ptr::null_mut(), ptr::null_mut()), WFS_ERR_INVALID_POINTER);
+        assert_eq!(WFMAllocateMore(10, 1 as *mut _, &mut ptr::null_mut()), WFS_ERR_INVALID_BUFFER);
     }
 
     #[test]
