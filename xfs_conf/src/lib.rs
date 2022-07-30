@@ -26,25 +26,6 @@ use winapi::{
 };
 use xfslib::*;
 
-macro_rules! xfs_unwrap {
-    ($l:expr) => {
-        match $l {
-            Ok(result) => result,
-            Err(error) => {
-                trace!("{:?}", error);
-                return WFS_ERR_INTERNAL_ERROR;
-            }
-        }
-    };
-}
-
-macro_rules! xfs_reject {
-    ($l:expr) => {{
-        error!("XFS_SUPP {}", stringify!($l));
-        return $l;
-    }};
-}
-
 #[allow(non_snake_case)]
 #[no_mangle]
 #[logfn(TRACE)]
@@ -252,7 +233,7 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
     if fdw_reason == DLL_PROCESS_ATTACH {
         let logfile = FileAppender::builder()
             .encoder(Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S)} {l} {L} - {m}\n")))
-            .build("C:\\XFS_CONF.log")
+            .build("$ENV{Public}\\XFS_CONF.log")
             .unwrap();
         let config = Config::builder()
             .appender(Appender::builder().build("logfile", Box::new(logfile)))
@@ -267,48 +248,50 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use winapi::shared::minwindef::MAX_PATH;
 
     #[test]
     fn test_open_key() {
-        use super::*;
+        let mut key: HKEY = ptr::null_mut();
+        let path = CString::new("LOGICAL_SERVICES\\cwd").unwrap();
+        let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
+        assert_eq!(result, 0);
+    }
+    #[test]
+    fn test_open_key_fail() {
+        let mut key: HKEY = ptr::null_mut();
+        let path = CString::new("LOGICAL_SERVICES\\gfdggfshfgsdfgs").unwrap();
+        let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
+        assert_eq!(result, WFS_ERR_CFG_INVALID_HKEY);
+    }
+    #[test]
+    fn test_query_value() {
+        let mut lgl_prov_path = [0u8; MAX_PATH];
+        let mut key: HKEY = ptr::null_mut();
+        let path = CString::new("LOGICAL_SERVICES\\cwd").unwrap();
 
-        // let mut lgl_prov_path: Vec<u8> = Vec::with_capacity(MAX_PATH);
-        let mut lgl_prov_path: [u8; MAX_PATH] = [0; MAX_PATH]; // Change size as needed.
+        let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
+        assert_eq!(result, WFS_SUCCESS);
 
-        unsafe {
-            let mut key: HKEY = ptr::null_mut();
+        let name = CString::new("provider").unwrap();
+        let len = &mut (MAX_PATH as u32);
+        let result = unsafe { WFMQueryValue(key, name.as_ptr() as *mut _, lgl_prov_path.as_mut_ptr() as *mut _, len) };
+        assert_eq!(result, WFS_SUCCESS);
+        assert_eq!(&lgl_prov_path[..*len as usize], b"serviceprovider");
+    }
+    #[test]
+    fn test_query_value_fail() {
+        let mut lgl_prov_path = [0u8; MAX_PATH];
+        let mut key: HKEY = ptr::null_mut();
+        let path = CString::new("LOGICAL_SERVICES\\cwd").unwrap();
 
-            let path = CString::new("LOGICAL_SERVICES\\cwd").unwrap();
-            let result = WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key);
-            assert_eq!(result, 0);
+        let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
+        assert_eq!(result, WFS_SUCCESS);
 
-            let name = CString::new("provider").unwrap();
-            let len = &mut (MAX_PATH as u32);
-            let result = WFMQueryValue(key, name.as_ptr() as *mut _, lgl_prov_path.as_mut_ptr() as *mut _, len);
-            assert_eq!(result, 0);
-
-            let str = std::str::from_utf8(&lgl_prov_path[..*len as usize]).unwrap();
-            assert_eq!(str, "serviceprovider");
-
-            {
-                let name = CString::new("provider3").unwrap();
-                let len = &mut (MAX_PATH as u32);
-                let result = WFMQueryValue(key, name.as_ptr() as *mut _, lgl_prov_path.as_mut_ptr() as *mut _, len);
-                assert_eq!(result, 0);
-
-                let str = std::str::from_utf8(&lgl_prov_path[..*len as usize]).unwrap();
-                assert_eq!(str, "serviceprovider");
-            }
-            {
-                let name = CString::new("provider2").unwrap();
-                let len = &mut (MAX_PATH as u32);
-                let result = WFMQueryValue(key, name.as_ptr() as *mut _, lgl_prov_path.as_mut_ptr() as *mut _, len);
-                assert_eq!(result, 0);
-
-                let str = std::str::from_utf8(&lgl_prov_path[..*len as usize]).unwrap();
-                assert_eq!(str, "serviceprovider");
-            }
-        }
+        let name = CString::new("54gfdgfdgdfgsgsfg").unwrap();
+        let len = &mut (MAX_PATH as u32);
+        let result = unsafe { WFMQueryValue(key, name.as_ptr() as *mut _, lgl_prov_path.as_mut_ptr() as *mut _, len) };
+        assert_eq!(result, WFS_ERR_CFG_INVALID_NAME);
     }
 }

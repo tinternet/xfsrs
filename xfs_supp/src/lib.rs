@@ -1,6 +1,6 @@
 use std::ffi::CStr;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{collections::HashMap, sync::Mutex};
 
 use lazy_static::lazy_static;
@@ -24,26 +24,6 @@ use winapi::{
 };
 use xfslib::*;
 
-/// Unwraps result, logging error if any and returning xfs internal error value.
-macro_rules! xfs_unwrap {
-    ($l:expr) => {
-        match $l {
-            Ok(result) => result,
-            Err(error) => {
-                error!("{:?}", error);
-                return WFS_ERR_INTERNAL_ERROR;
-            }
-        }
-    };
-}
-
-macro_rules! xfs_reject {
-    ($l:expr) => {{
-        error!("XFS_SUPP {}", stringify!($l));
-        return $l;
-    }};
-}
-
 lazy_static! {
     // holds application & service providers buffers
     static ref BUFFERS: Mutex<HashMap<ULONG_PTR, Allocation>> = Mutex::new(HashMap::new());
@@ -56,6 +36,13 @@ struct Allocation {
     _buffer: Vec<u8>,
     extended: Vec<Vec<u8>>,
     flags: ULONG,
+}
+
+impl Allocation {
+    fn new(buffer: Vec<u8>, flags: ULONG) -> Self {
+        let extended = vec![];
+        Self { _buffer: buffer, extended, flags }
+    }
 }
 
 struct Timer {
@@ -72,24 +59,17 @@ pub extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvDat
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    let mut buffer: Vec<u8> = if ulFlags & WFS_MEM_ZEROINIT == 0 {
-        Vec::with_capacity(ulSize as usize)
-    } else {
-        vec![0; ulSize as usize]
+    let mut buffer: Vec<u8> = match ulFlags & WFS_MEM_ZEROINIT {
+        0 => vec![0; ulSize as usize],
+        _ => vec![0; ulSize as usize],
     };
-    let ptr = buffer.as_mut_ptr();
 
+    let ptr: *mut u8 = buffer.as_mut_ptr();
     // SAFETY: we know that lppvData is not null
-    unsafe {
-        lppvData.write(ptr as *mut _);
-    }
+    unsafe { lppvData.write(ptr as *mut _) };
 
-    let allocation = Allocation {
-        _buffer: buffer,
-        extended: Vec::new(),
-        flags: ulFlags,
-    };
-    xfs_unwrap!(BUFFERS.lock()).insert(ptr as _, allocation);
+    let allocation = Allocation::new(buffer, ulFlags);
+    xfs_unwrap!(BUFFERS.lock()).insert(ptr as ULONG_PTR, allocation);
     WFS_SUCCESS
 }
 
@@ -103,22 +83,17 @@ pub extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppv
     }
 
     let mut buffers = xfs_unwrap!(BUFFERS.lock());
-
     let allocation = match buffers.get_mut(&(lpvOriginal as ULONG_PTR)) {
         Some(allocation) => allocation,
         None => xfs_reject!(WFS_ERR_INVALID_BUFFER),
     };
-
-    let mut buffer: Vec<u8> = if allocation.flags & WFS_MEM_ZEROINIT == 0 {
-        Vec::with_capacity(ulSize as usize)
-    } else {
-        vec![0; ulSize as usize]
+    let mut buffer: Vec<u8> = match allocation.flags & WFS_MEM_ZEROINIT {
+        0 => vec![0; ulSize as usize],
+        _ => vec![0; ulSize as usize],
     };
 
     // SAFETY: we know that lppvData is not null
-    unsafe {
-        lppvData.write(buffer.as_mut_ptr() as *mut _);
-    }
+    unsafe { lppvData.write(buffer.as_mut_ptr() as *mut _) };
 
     allocation.extended.push(buffer);
     WFS_SUCCESS
@@ -132,11 +107,9 @@ pub extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
     if lpvData.is_null() {
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
-
     if xfs_unwrap!(BUFFERS.lock()).remove(&(lpvData as ULONG_PTR)).is_none() {
         xfs_reject!(WFS_ERR_INVALID_BUFFER);
     }
-
     WFS_SUCCESS
 }
 
@@ -234,27 +207,11 @@ pub extern "stdcall" fn WFMSetTraceLevel(_hService: HSERVICE, _dwTraceLevel: DWO
 
 #[allow(non_snake_case)]
 #[no_mangle]
-#[logfn(TRACE)]
-#[logfn_inputs(TRACE)]
-pub extern "stdcall" fn CleanUp() -> HRESULT {
-    for timer in TIMERS.iter().map(|timer| timer.swap(ptr::null_mut(), Ordering::SeqCst)).filter(|timer| !timer.is_null()) {
-        // SAFETY: we know that timer is not null and we know it's not dropped yet since we are using atomic swap
-        let _ = unsafe { Box::from_raw(timer) };
-    }
-
-    // Buffers are contained in vectors, so dropping them is safe
-    xfs_unwrap!(BUFFERS.lock()).clear();
-
-    WFS_SUCCESS
-}
-
-#[allow(non_snake_case)]
-#[no_mangle]
 pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPVOID) -> bool {
     if fdw_reason == DLL_PROCESS_ATTACH {
         let logfile = FileAppender::builder()
             .encoder(Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S)} {l} {L} - {m}\n")))
-            .build("C:\\XFS_SUPP.log")
+            .build("$ENV{Public}\\XFS_SUPP.log")
             .unwrap();
         let config = Config::builder()
             .appender(Appender::builder().build("logfile", Box::new(logfile)))
@@ -265,4 +222,84 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
         trace!("XFS SUPP DLL INIT");
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_allocate() {
+        let mut buffer = ptr::null_mut();
+        let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut buffer);
+        assert_eq!(result, WFS_SUCCESS);
+        assert_ne!(buffer, ptr::null_mut());
+    }
+    #[test]
+    fn test_allocate_more() {
+        let mut buffer = ptr::null_mut();
+        let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut buffer);
+        assert_eq!(result, WFS_SUCCESS);
+        assert_ne!(buffer, ptr::null_mut());
+
+        let mut buffer2 = ptr::null_mut();
+        let result2 = WFMAllocateMore(10, buffer, &mut buffer2);
+        assert_eq!(result2, WFS_SUCCESS);
+        assert_ne!(buffer2, ptr::null_mut());
+    }
+    #[test]
+    fn test_allocate_more_fail() {
+        let mut buffer = ptr::null_mut();
+        let result = WFMAllocateMore(10, buffer, &mut buffer);
+        assert_eq!(result, WFS_ERR_INVALID_POINTER);
+    }
+    #[test]
+    fn test_free() {
+        let mut buffer = ptr::null_mut();
+        let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut buffer);
+        assert_eq!(result, WFS_SUCCESS);
+        assert_ne!(buffer, ptr::null_mut());
+
+        let result = WFMFreeBuffer(buffer);
+        assert_eq!(result, WFS_SUCCESS);
+
+        let result = WFMFreeBuffer(buffer);
+        assert_eq!(result, WFS_ERR_INVALID_BUFFER);
+    }
+    #[test]
+    fn test_free_parent_first() {
+        let mut buffer = ptr::null_mut();
+        let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut buffer);
+        assert_eq!(result, WFS_SUCCESS);
+        assert_ne!(buffer, ptr::null_mut());
+
+        let mut buffer2 = ptr::null_mut();
+        let result2 = WFMAllocateMore(10, buffer, &mut buffer2);
+        assert_eq!(result2, WFS_SUCCESS);
+        assert_ne!(buffer2, ptr::null_mut());
+
+        let result = WFMFreeBuffer(buffer);
+        assert_eq!(result, WFS_SUCCESS);
+
+        let result = WFMFreeBuffer(buffer2);
+        assert_eq!(result, WFS_ERR_INVALID_BUFFER);
+    }
+    // #[test]
+    // fn test_free_children_first() {
+    //     let mut buffer = ptr::null_mut();
+    //     let result = WFMAllocateBuffer(10, WFS_MEM_ZEROINIT, &mut buffer);
+    //     assert_eq!(result, WFS_SUCCESS);
+    //     assert_ne!(buffer, ptr::null_mut());
+
+    //     let mut buffer2 = ptr::null_mut();
+    //     let result2 = WFMAllocateMore(10, buffer, &mut buffer2);
+    //     assert_eq!(result2, WFS_SUCCESS);
+    //     assert_ne!(buffer2, ptr::null_mut());
+
+    //     let result = WFMFreeBuffer(buffer2);
+    //     assert_eq!(result, WFS_SUCCESS);
+
+    //     let result = WFMFreeBuffer(buffer);
+    //     assert_eq!(result, WFS_SUCCESS);
+    // }
 }

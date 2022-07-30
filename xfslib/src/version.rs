@@ -45,3 +45,26 @@ impl VersionRange {
         ((self.start.value() as DWORD) << 16) | self.end.value() as DWORD
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version() {
+        let version = Version::new(0x0102);
+        assert_eq!(version.minor, 1);
+        assert_eq!(version.major, 2);
+        assert_eq!(version.value(), 0x0102);
+    }
+
+    #[test]
+    fn test_range() {
+        let range = VersionRange::new(0x01020304);
+        assert_eq!(range.start.minor, 1);
+        assert_eq!(range.start.major, 2);
+        assert_eq!(range.end.minor, 3);
+        assert_eq!(range.end.major, 4);
+        assert_eq!(range.value(), 0x01020304);
+    }
+}

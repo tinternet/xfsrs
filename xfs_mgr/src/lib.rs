@@ -56,26 +56,6 @@ lazy_static! {
     static ref BLOCKING_HOOK: Mutex<Option<XFSBLOCKINGHOOK>> = Mutex::new(None);
 }
 
-/// Unwraps result, logging error if any and returning xfs internal error value.
-macro_rules! xfs_unwrap {
-    ($l:expr) => {
-        match $l {
-            Ok(result) => result,
-            Err(error) => {
-                error!("{:?}", error);
-                return WFS_ERR_INTERNAL_ERROR;
-            }
-        }
-    };
-}
-
-macro_rules! xfs_reject {
-    ($l:expr) => {{
-        error!(stringify!($l));
-        return $l;
-    }};
-}
-
 /// Asserts that the WFSStartup function has been called.
 macro_rules! assert_started {
     () => {
@@ -475,9 +455,7 @@ pub extern "stdcall" fn WFSOpen(
     lphService: LPHSERVICE,
 ) -> HRESULT {
     assert_started!();
-    // block_thread!();
-
-    let result = call_async(
+    call_async(
         WFS_OPEN_COMPLETE,
         |hwnd, request_id| {
             WFSAsyncOpen(
@@ -495,10 +473,7 @@ pub extern "stdcall" fn WFSOpen(
             )
         },
         &mut ptr::null_mut(),
-    );
-
-    trace!("WFSOpen result: {:?}", result);
-    result
+    )
 }
 
 #[allow(non_snake_case)]
@@ -687,20 +662,21 @@ pub extern "stdcall" fn WFSSetBlockingHook(lpBlockFunc: XFSBLOCKINGHOOK, lppPrev
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWFSVERSION) -> HRESULT {
-    let range = VersionRange::new(dwVersionsRequired);
+    // TODO: debug why diebold works with pointer here
+    // let range = VersionRange::new(dwVersionsRequired);
 
-    if range.start > range.end {
-        xfs_reject!(WFS_ERR_INTERNAL_ERROR);
-    }
-    if range.start > Version::new_explicit(3, 30) {
-        xfs_reject!(WFS_ERR_API_VER_TOO_HIGH);
-    }
-    if range.end < Version::new_explicit(2, 00) {
-        xfs_reject!(WFS_ERR_API_VER_TOO_LOW);
-    }
-    if lpWFSVersion.is_null() {
-        xfs_reject!(WFS_ERR_INVALID_POINTER);
-    }
+    // if range.start > range.end {
+    //     xfs_reject!(WFS_ERR_INTERNAL_ERROR);
+    // }
+    // if range.start > Version::new_explicit(3, 30) {
+    //     xfs_reject!(WFS_ERR_API_VER_TOO_HIGH);
+    // }
+    // if range.end < Version::new_explicit(2, 00) {
+    //     xfs_reject!(WFS_ERR_API_VER_TOO_LOW);
+    // }
+    // if lpWFSVersion.is_null() {
+    //     xfs_reject!(WFS_ERR_INVALID_POINTER);
+    // }
 
     let mut version = WFSVERSION {
         w_version: Version::new_explicit(3, 0).value(),
@@ -881,7 +857,7 @@ pub extern "stdcall" fn DllMain(_hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPV
     if fdw_reason == DLL_PROCESS_ATTACH {
         let logfile = FileAppender::builder()
             .encoder(Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S)} {l} {L} - {m}\n")))
-            .build("C:\\Diebold\\XFS_MGR.log")
+            .build("$ENV{Public}\\XFS_MGR.log")
             .unwrap();
         let config = Config::builder()
             .appender(Appender::builder().build("logfile", Box::new(logfile)))
