@@ -8,7 +8,6 @@ use std::{
 };
 
 use lazy_static::lazy_static;
-use log::error;
 use log_derive::{logfn, logfn_inputs};
 use winapi::{
     shared::{
@@ -25,16 +24,15 @@ use winapi::{
 
 use xfslib::*;
 
-mod mgr;
-mod spi;
+mod manager;
+mod service;
+// mod spi;
 
 lazy_static! {
     // indicates whether WFSStartup has been called
     static ref STARTED: AtomicBool = AtomicBool::new(false);
-
     // holds blocked threads and unblock flag
     static ref BLOCKED_THREADS: Mutex<HashSet<DWORD>> = Mutex::new(HashSet::new());
-
     // holds application defined blocking hook
     static ref BLOCKING_HOOK: AtomicPtr<XFSBLOCKINGHOOK> = AtomicPtr::new(ptr::null_mut());
 }
@@ -51,7 +49,7 @@ macro_rules! assert_started {
 /// Asserts that the current thread id does not have a blocking call in progress.
 macro_rules! assert_unblocked {
     () => {
-        if xfs_unwrap!(BLOCKED_THREADS.lock()).contains(unsafe { &GetCurrentThreadId() }) {
+        if blocked_threads!().contains(unsafe { &GetCurrentThreadId() }) {
             xfs_reject!(WFS_ERR_OP_IN_PROGRESS);
         }
     };
@@ -60,9 +58,15 @@ macro_rules! assert_unblocked {
 /// Asserts that the current thread id does not have a blocking call in progress and sets the blocking status to true.
 macro_rules! block_thread {
     () => {
-        if !xfs_unwrap!(BLOCKED_THREADS.lock()).insert(unsafe { GetCurrentThreadId() }) {
+        if !blocked_threads!().insert(unsafe { GetCurrentThreadId() }) {
             xfs_reject!(WFS_ERR_OP_IN_PROGRESS);
         }
+    };
+}
+
+macro_rules! blocked_threads {
+    () => {
+        BLOCKED_THREADS.lock().unwrap_or_else(|e| e.into_inner())
     };
 }
 
@@ -73,7 +77,7 @@ macro_rules! block_thread {
 pub extern "stdcall" fn WFSCancelAsyncRequest(h_service: HSERVICE, request_id: REQUESTID) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::cancel_request(h_service, request_id)
+    manager::cancel_request(h_service, request_id)
 }
 
 #[allow(non_snake_case)]
@@ -82,8 +86,7 @@ pub extern "stdcall" fn WFSCancelAsyncRequest(h_service: HSERVICE, request_id: R
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT {
     assert_started!();
-    let mut blocks = BLOCKED_THREADS.lock().unwrap_or_else(|e| e.into_inner());
-    if blocks.remove(&dwThreadID) {
+    if blocked_threads!().remove(&dwThreadID) {
         return WFS_SUCCESS;
     }
     xfs_reject!(WFS_ERR_NO_BLOCKING_CALL);
@@ -97,27 +100,39 @@ pub extern "stdcall" fn WFSCancelBlockingCall(dwThreadID: DWORD) -> HRESULT {
 pub extern "stdcall" fn WFSCleanUp() -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::clean_up()
+    manager::clean_up()
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFSClose(hService: HSERVICE) -> HRESULT {
+pub extern "stdcall" fn WFSClose(h_service: HSERVICE) -> HRESULT {
     assert_started!();
     block_thread!();
-    call_async(WFS_CLOSE_COMPLETE, |hwnd, reqid| mgr::async_close(hService, hwnd, reqid), &mut ptr::null_mut())
+    let window = SyncWindow::new(WFS_CLOSE_COMPLETE);
+    let result = manager::close_service(h_service, window.handle(), ptr::null_mut());
+
+    if result != WFS_SUCCESS {
+        xfs_reject!(result);
+    }
+
+    let result = match wait_result(window) {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+
+    unsafe { ptr::addr_of!(result.hResult).read_unaligned() }
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFSAsyncClose(hService: HSERVICE, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
+pub extern "stdcall" fn WFSAsyncClose(service: HSERVICE, wnd: HWND, request_id: LPREQUESTID) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::async_close(hService, hWnd, lpRequestID)
+    manager::close_service(service, wnd, request_id)
 }
 
 #[allow(non_snake_case)]
@@ -127,7 +142,7 @@ pub extern "stdcall" fn WFSAsyncClose(hService: HSERVICE, hWnd: HWND, lpRequestI
 pub extern "stdcall" fn WFSCreateAppHandle(lphApp: LPHAPP) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::create_app_handle(lphApp)
+    manager::create_app_handle(lphApp)
 }
 
 #[allow(non_snake_case)]
@@ -137,11 +152,19 @@ pub extern "stdcall" fn WFSCreateAppHandle(lphApp: LPHAPP) -> HRESULT {
 pub extern "stdcall" fn WFSDeregister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
     assert_started!();
     block_thread!();
-    call_async(
-        WFS_DEREGISTER_COMPLETE,
-        |hwnd, request_id| mgr::async_deregister(hService, dwEventClass, hWndReg, hwnd, request_id),
-        &mut ptr::null_mut(),
-    )
+    let window = SyncWindow::new(WFS_DEREGISTER_COMPLETE);
+    let result = manager::deregister(hService, dwEventClass, hWndReg, window.handle(), ptr::null_mut());
+
+    if result != WFS_SUCCESS {
+        xfs_reject!(result);
+    }
+
+    let result = match wait_result(window) {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+
+    unsafe { ptr::addr_of!(result.hResult).read_unaligned() }
 }
 
 #[allow(non_snake_case)]
@@ -151,7 +174,7 @@ pub extern "stdcall" fn WFSDeregister(hService: HSERVICE, dwEventClass: DWORD, h
 pub extern "stdcall" fn WFSAsyncDeregister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::async_deregister(hService, dwEventClass, hWndReg, hWnd, lpRequestID)
+    manager::deregister(hService, dwEventClass, hWndReg, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
@@ -161,7 +184,7 @@ pub extern "stdcall" fn WFSAsyncDeregister(hService: HSERVICE, dwEventClass: DWO
 pub extern "stdcall" fn WFSDestroyAppHandle(hApp: HAPP) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::destroy_app_handle(hApp)
+    manager::destroy_app_handle(hApp)
 }
 
 #[allow(non_snake_case)]
@@ -171,11 +194,19 @@ pub extern "stdcall" fn WFSDestroyAppHandle(hApp: HAPP) -> HRESULT {
 pub extern "stdcall" fn WFSExecute(hService: HSERVICE, dwCommand: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, lppResult: *mut LPWFSRESULT) -> HRESULT {
     assert_started!();
     block_thread!();
-    call_async(
-        WFS_EXECUTE_COMPLETE,
-        |hwnd, request_id| mgr::async_execute(hService, dwCommand, lpCmdData, dwTimeOut, hwnd, request_id),
-        lppResult,
-    )
+    let window = SyncWindow::new(WFS_EXECUTE_COMPLETE);
+    let result = manager::execute(hService, dwCommand, lpCmdData, dwTimeOut, window.handle(), ptr::null_mut());
+
+    if result != WFS_SUCCESS {
+        xfs_reject!(result);
+    }
+
+    let result = match wait_result(window) {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+
+    unsafe { ptr::addr_of!(result.hResult).read_unaligned() }
 }
 
 #[allow(non_snake_case)]
@@ -185,7 +216,7 @@ pub extern "stdcall" fn WFSExecute(hService: HSERVICE, dwCommand: DWORD, lpCmdDa
 pub extern "stdcall" fn WFSAsyncExecute(hService: HSERVICE, dwCommand: DWORD, lpCmdData: LPVOID, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::async_execute(hService, dwCommand, lpCmdData, dwTimeOut, hWnd, lpRequestID)
+    manager::execute(hService, dwCommand, lpCmdData, dwTimeOut, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
@@ -205,11 +236,19 @@ pub extern "stdcall" fn WFSFreeResult(lpResult: LPWFSRESULT) -> HRESULT {
 pub extern "stdcall" fn WFSGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQueryDetails: LPVOID, dwTimeOut: DWORD, lppResult: *mut LPWFSRESULT) -> HRESULT {
     assert_started!();
     block_thread!();
-    call_async(
-        WFS_GETINFO_COMPLETE,
-        |hwnd, request_id| mgr::async_get_info(hService, dwCategory, lpQueryDetails, dwTimeOut, hwnd, request_id),
-        lppResult,
-    )
+    let window = SyncWindow::new(WFS_GETINFO_COMPLETE);
+    let result = manager::get_info(hService, dwCategory, lpQueryDetails, dwTimeOut, window.handle(), ptr::null_mut());
+
+    if result != WFS_SUCCESS {
+        xfs_reject!(result);
+    }
+
+    let result = match wait_result(window) {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+
+    unsafe { ptr::addr_of!(result.hResult).read_unaligned() }
 }
 
 #[allow(non_snake_case)]
@@ -219,7 +258,7 @@ pub extern "stdcall" fn WFSGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQuer
 pub extern "stdcall" fn WFSAsyncGetInfo(hService: HSERVICE, dwCategory: DWORD, lpQueryDetails: LPVOID, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::async_get_info(hService, dwCategory, lpQueryDetails, dwTimeOut, hWnd, lpRequestID)
+    manager::get_info(hService, dwCategory, lpQueryDetails, dwTimeOut, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
@@ -239,7 +278,19 @@ pub extern "stdcall" fn WFSIsBlocking() -> bool {
 pub extern "stdcall" fn WFSLock(hService: HSERVICE, dwTimeOut: DWORD, lppResult: *mut LPWFSRESULT) -> HRESULT {
     assert_started!();
     block_thread!();
-    call_async(WFS_LOCK_COMPLETE, |hwnd, request_id| mgr::async_lock(hService, dwTimeOut, hwnd, request_id), lppResult)
+    let window = SyncWindow::new(WFS_LOCK_COMPLETE);
+    let result = manager::lock(hService, dwTimeOut, window.handle(), ptr::null_mut());
+
+    if result != WFS_SUCCESS {
+        xfs_reject!(result);
+    }
+
+    let result = match wait_result(window) {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+
+    unsafe { ptr::addr_of!(result.hResult).read_unaligned() }
 }
 
 #[allow(non_snake_case)]
@@ -249,7 +300,7 @@ pub extern "stdcall" fn WFSLock(hService: HSERVICE, dwTimeOut: DWORD, lppResult:
 pub extern "stdcall" fn WFSAsyncLock(hService: HSERVICE, dwTimeOut: DWORD, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::async_lock(hService, dwTimeOut, hWnd, lpRequestID)
+    manager::lock(hService, dwTimeOut, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
@@ -257,37 +308,44 @@ pub extern "stdcall" fn WFSAsyncLock(hService: HSERVICE, dwTimeOut: DWORD, hWnd:
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSOpen(
-    lpszLogicalName: LPSTR,
-    hApp: HAPP,
-    lpszAppID: LPSTR,
-    dwTraceLevel: DWORD,
-    dwTimeOut: DWORD,
-    dwSrvcVersionsRequired: DWORD,
-    lpSrvcVersion: LPWFSVERSION,
-    lpSPIVersion: LPWFSVERSION,
-    lphService: LPHSERVICE,
+    logical_name: LPSTR,
+    app: HAPP,
+    app_id: LPSTR,
+    trace_level: DWORD,
+    time_out: DWORD,
+    srvc_versions_required: DWORD,
+    srvc_version: LPWFSVERSION,
+    spiversion: LPWFSVERSION,
+    service: LPHSERVICE,
 ) -> HRESULT {
     assert_started!();
     block_thread!();
-    call_async(
-        WFS_OPEN_COMPLETE,
-        |hwnd, request_id| {
-            mgr::async_open(
-                lpszLogicalName,
-                hApp,
-                lpszAppID,
-                dwTraceLevel,
-                dwTimeOut,
-                lphService,
-                hwnd,
-                dwSrvcVersionsRequired,
-                lpSrvcVersion,
-                lpSPIVersion,
-                request_id,
-            )
-        },
-        &mut ptr::null_mut(),
-    )
+
+    let window = SyncWindow::new(WFS_OPEN_COMPLETE);
+    let result = manager::open_service(
+        logical_name,
+        app,
+        app_id,
+        trace_level,
+        time_out,
+        service,
+        window.handle(),
+        srvc_versions_required,
+        srvc_version,
+        spiversion,
+        ptr::null_mut(),
+    );
+
+    if result != WFS_SUCCESS {
+        xfs_reject!(result);
+    }
+
+    let result = match wait_result(window) {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+
+    unsafe { ptr::addr_of!(result.hResult).read_unaligned() }
 }
 
 #[allow(non_snake_case)]
@@ -295,32 +353,32 @@ pub extern "stdcall" fn WFSOpen(
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFSAsyncOpen(
-    lpszLogicalName: LPSTR,
-    hApp: HAPP,
-    lpszAppID: LPSTR,
-    dwTraceLevel: DWORD,
-    dwTimeOut: DWORD,
-    lphService: LPHSERVICE,
-    hWnd: HWND,
-    dwSrvcVersionsRequired: DWORD,
-    lpSrvcVersion: LPWFSVERSION,
-    lpSPIVersion: LPWFSVERSION,
-    lpRequestID: LPREQUESTID,
+    logical_name: LPSTR,
+    app: HAPP,
+    app_id: LPSTR,
+    trace_level: DWORD,
+    time_out: DWORD,
+    service: LPHSERVICE,
+    wnd: HWND,
+    srvc_versions_required: DWORD,
+    srvc_version: LPWFSVERSION,
+    spiversion: LPWFSVERSION,
+    request_id: LPREQUESTID,
 ) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::async_open(
-        lpszLogicalName,
-        hApp,
-        lpszAppID,
-        dwTraceLevel,
-        dwTimeOut,
-        lphService,
-        hWnd,
-        dwSrvcVersionsRequired,
-        lpSrvcVersion,
-        lpSPIVersion,
-        lpRequestID,
+    manager::open_service(
+        logical_name,
+        app,
+        app_id,
+        trace_level,
+        time_out,
+        service,
+        wnd,
+        srvc_versions_required,
+        srvc_version,
+        spiversion,
+        request_id,
     )
 }
 
@@ -331,14 +389,24 @@ pub extern "stdcall" fn WFSAsyncOpen(
 pub extern "stdcall" fn WFSRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND) -> HRESULT {
     assert_started!();
     block_thread!();
+
     if hService == 0 {
         return WFS_SUCCESS;
     }
-    call_async(
-        WFS_REGISTER_COMPLETE,
-        |hwnd, request_id| mgr::async_register(hService, dwEventClass, hWndReg, hwnd, request_id),
-        &mut ptr::null_mut(),
-    )
+
+    let window = SyncWindow::new(WFS_REGISTER_COMPLETE);
+    let result = manager::register(hService, dwEventClass, hWndReg, window.handle(), ptr::null_mut());
+
+    if result != WFS_SUCCESS {
+        xfs_reject!(result);
+    }
+
+    let result = match wait_result(window) {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+
+    unsafe { ptr::addr_of!(result.hResult).read_unaligned() }
 }
 
 #[allow(non_snake_case)]
@@ -348,7 +416,7 @@ pub extern "stdcall" fn WFSRegister(hService: HSERVICE, dwEventClass: DWORD, hWn
 pub extern "stdcall" fn WFSAsyncRegister(hService: HSERVICE, dwEventClass: DWORD, hWndReg: HWND, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::async_register(hService, dwEventClass, hWndReg, hWnd, lpRequestID)
+    manager::register(hService, dwEventClass, hWndReg, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
@@ -370,7 +438,7 @@ pub extern "stdcall" fn WFSStartUp(dwVersionsRequired: DWORD, lpWFSVersion: LPWF
     if STARTED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return WFS_ERR_ALREADY_STARTED;
     }
-    mgr::start_up(dwVersionsRequired, lpWFSVersion)
+    manager::start_up(dwVersionsRequired, lpWFSVersion)
 }
 
 #[allow(non_snake_case)]
@@ -391,7 +459,7 @@ pub extern "stdcall" fn WFSUnhookBlockingHook() -> HRESULT {
 pub extern "stdcall" fn WFSAsyncUnlock(hService: HSERVICE, hWnd: HWND, lpRequestID: LPREQUESTID) -> HRESULT {
     assert_started!();
     assert_unblocked!();
-    mgr::async_unlock(hService, hWnd, lpRequestID)
+    manager::unlock(hService, hWnd, lpRequestID)
 }
 
 #[allow(non_snake_case)]
@@ -400,7 +468,7 @@ pub extern "stdcall" fn WFSAsyncUnlock(hService: HSERVICE, hWnd: HWND, lpRequest
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMGetTraceLevel(h_service: HSERVICE, lpdw_trace_level: LPDWORD) -> HRESULT {
     assert_started!();
-    mgr::get_trace_level(h_service, lpdw_trace_level)
+    manager::get_trace_level(h_service, lpdw_trace_level)
 }
 
 #[allow(non_snake_case)]
@@ -409,7 +477,7 @@ pub extern "stdcall" fn WFMGetTraceLevel(h_service: HSERVICE, lpdw_trace_level: 
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMReleaseDLL(hProvider: HPROVIDER) -> HRESULT {
     assert_started!();
-    mgr::release_dll(hProvider)
+    manager::release_dll(hProvider)
 }
 
 #[allow(non_snake_case)]
@@ -417,7 +485,7 @@ pub extern "stdcall" fn WFMReleaseDLL(hProvider: HPROVIDER) -> HRESULT {
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, lppvData: *mut LPVOID) -> HRESULT {
-    xfslib::supp::allocate_buffer(ulSize, ulFlags, lppvData)
+    xfslib::heap::allocate_buffer(ulSize, ulFlags, lppvData)
 }
 
 #[allow(non_snake_case)]
@@ -425,7 +493,7 @@ pub unsafe extern "stdcall" fn WFMAllocateBuffer(ulSize: ULONG, ulFlags: ULONG, 
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppvData: *mut LPVOID) -> HRESULT {
-    xfslib::supp::allocate_more(ulSize, lpvOriginal, lppvData)
+    xfslib::heap::allocate_more(ulSize, lpvOriginal, lppvData)
 }
 
 #[allow(non_snake_case)]
@@ -433,7 +501,7 @@ pub unsafe extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOI
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
-    xfslib::supp::free_buffer(lpvData)
+    xfslib::heap::free_buffer(lpvData)
 }
 
 #[allow(non_snake_case)]
@@ -441,13 +509,13 @@ pub unsafe extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
-    xfslib::supp::kill_timer(wTimerID)
+    xfslib::timer::kill_timer(wTimerID)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 pub extern "stdcall" fn WFMOutputTraceData(lpsz_data: LPSTR) -> HRESULT {
-    xfslib::supp::output_trace_data(lpsz_data)
+    xfslib::output_trace_data(lpsz_data)
 }
 
 #[allow(non_snake_case)]
@@ -455,7 +523,7 @@ pub extern "stdcall" fn WFMOutputTraceData(lpsz_data: LPSTR) -> HRESULT {
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTimeVal: DWORD, lpwTimerID: LPWORD) -> HRESULT {
-    xfslib::supp::set_timer(hWnd, lpContext, dwTimeVal, lpwTimerID)
+    xfslib::timer::set_timer(hWnd, lpContext, dwTimeVal, lpwTimerID)
 }
 
 #[allow(non_snake_case)]
@@ -464,7 +532,7 @@ pub unsafe extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTime
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMSetTraceLevel(hService: HSERVICE, dwTraceLevel: DWORD) -> HRESULT {
     assert_started!();
-    mgr::set_trace_level(hService, dwTraceLevel)
+    manager::set_trace_level(hService, dwTraceLevel)
 }
 
 #[allow(non_snake_case)]
@@ -481,41 +549,41 @@ pub extern "stdcall" fn DllMain(hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPVO
 pub extern "stdcall" fn WFSUnlock(hService: HSERVICE) -> HRESULT {
     assert_started!();
     block_thread!();
-    call_async(WFS_UNLOCK_COMPLETE, |hwnd, request_id| mgr::async_unlock(hService, hwnd, request_id), &mut ptr::null_mut())
-}
-
-/// Calls asynchronous function on the current thread.
-fn call_async(message: u32, async_fn: impl Fn(HWND, LPREQUESTID) -> HRESULT, lpp_result: *mut LPWFSRESULT) -> HRESULT {
-    let window = SyncWindow::new(message);
-    let mut request_id = 0;
-    let result = async_fn(window.handle(), &mut request_id);
+    let window = SyncWindow::new(WFS_UNLOCK_COMPLETE);
+    let result = manager::unlock(hService, window.handle(), ptr::null_mut());
 
     if result != WFS_SUCCESS {
         xfs_reject!(result);
     }
 
+    let result = match wait_result(window) {
+        Ok(result) => result,
+        Err(error) => return error,
+    };
+
+    unsafe { ptr::addr_of!(result.hResult).read_unaligned() }
+}
+
+fn wait_result(window: SyncWindow) -> Result<WFSRESULT, HRESULT> {
     loop {
         // Execute application hook or default hook dispatching window messages
         let hook = BLOCKING_HOOK.load(Ordering::SeqCst);
         let hook = if hook.is_null() { default_block_hook } else { unsafe { *hook } };
-        unsafe {
-            hook();
-        }
+        unsafe { hook() };
 
-        // The request was cancelled
+        // Quit if the process cancelled the call
         if !WFSIsBlocking() {
             // Drain the remaining messages
             while unsafe { hook() } {}
             // mgr::cancel_request(h_service, request_id);
-            xfs_reject!(WFS_ERR_CANCELED);
+            xfs_reject_err!(WFS_ERR_CANCELED);
         }
 
         // Check if we received result from the async call
-        if let Some(resultptr) = xfs_unwrap!(window.try_receive()) {
-            unsafe { lpp_result.write(resultptr as LPWFSRESULT) };
+        if let Some(resultptr) = xfs_unwrap_err!(window.try_receive()) {
             let wfs_result = resultptr as *const WFSRESULT;
-            let wfs_result = unsafe { std::mem::transmute::<*const WFSRESULT, &WFSRESULT>(wfs_result) };
-            return unsafe { ptr::addr_of!(wfs_result.hResult).read_unaligned() };
+            let result = unsafe { std::mem::transmute_copy::<*const WFSRESULT, WFSRESULT>(&wfs_result) };
+            return Ok(result);
         }
     }
 }

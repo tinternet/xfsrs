@@ -22,7 +22,6 @@ use winapi::{
 
 struct Message {
     message: u32,
-    // w_param: u32,
     l_param: u32,
 }
 
@@ -115,50 +114,76 @@ impl SyncWindow {
 
 impl Drop for SyncWindow {
     fn drop(&mut self) {
-        unsafe {
-            PostMessageA(self.hwnd, WM_CLOSE, 0, 0);
+        unsafe { PostMessageA(self.hwnd, WM_CLOSE, 0, 0) };
+    }
+}
+
+unsafe extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match message as u32 {
+        WM_GETMINMAXINFO => DefWindowProcA(window, message, wparam, lparam),
+        WM_NCCREATE => {
+            let createstruct = lparam as *mut CREATESTRUCTW;
+            if createstruct.is_null() {
+                return 0;
+            }
+            let sender_ptr = (*createstruct).lpCreateParams;
+            SetWindowLongPtrA(window, GWLP_USERDATA, sender_ptr as i32);
+            return 1;
+        }
+        WM_NCDESTROY => DefWindowProcA(window, message, wparam, lparam),
+        WM_NCCALCSIZE => DefWindowProcA(window, message, wparam, lparam),
+        WM_CREATE => DefWindowProcA(window, message, wparam, lparam),
+        WM_DESTROY => {
+            let ptr = GetWindowLongPtrA(window, GWLP_USERDATA) as *mut Sender<Message>;
+            drop(Box::from_raw(ptr));
+            PostQuitMessage(0);
+            0
+        }
+        WM_CLOSE => {
+            DestroyWindow(window);
+            0
+        }
+        SPI_GETDOCKMOVING => 0,
+        _ => {
+            let ptr = GetWindowLongPtrA(window, GWLP_USERDATA) as *mut Sender<Message>;
+            let sender = &*ptr;
+            sender
+                .send(Message {
+                    message,
+                    // w_param: wparam as u32,
+                    l_param: lparam as u32,
+                })
+                .unwrap();
+            1
         }
     }
 }
 
-extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    unsafe {
-        match message as u32 {
-            WM_GETMINMAXINFO => DefWindowProcA(window, message, wparam, lparam),
-            WM_NCCREATE => {
-                let createstruct: *mut CREATESTRUCTW = lparam as *mut _;
-                if createstruct.is_null() {
-                    return 0;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WFS_SYSTEM_EVENT;
+
+    #[test]
+    fn test_create() {
+        let window = SyncWindow::new(WM_GETMINMAXINFO);
+        assert_eq!(window.try_receive().is_ok(), true);
+    }
+
+    #[test]
+    fn test_message() {
+        let window = SyncWindow::new(WFS_SYSTEM_EVENT);
+        let ptr = &window as *const SyncWindow as isize;
+        unsafe { PostMessageA(window.handle(), WFS_SYSTEM_EVENT, 0, ptr) };
+
+        loop {
+            match window.try_receive() {
+                Ok(Some(message)) => {
+                    assert_eq!(message, ptr as u32);
+                    break;
                 }
-                let sender_ptr = (*createstruct).lpCreateParams;
-                SetWindowLongPtrA(window, GWLP_USERDATA, sender_ptr as i32);
-                return 1;
-            }
-            WM_NCDESTROY => DefWindowProcA(window, message, wparam, lparam),
-            WM_NCCALCSIZE => DefWindowProcA(window, message, wparam, lparam),
-            WM_CREATE => DefWindowProcA(window, message, wparam, lparam),
-            WM_DESTROY => {
-                let ptr = GetWindowLongPtrA(window, GWLP_USERDATA) as *mut Sender<Message>;
-                drop(Box::from_raw(ptr));
-                PostQuitMessage(0);
-                0
-            }
-            WM_CLOSE => {
-                DestroyWindow(window);
-                0
-            }
-            SPI_GETDOCKMOVING => 0,
-            _ => {
-                let ptr = GetWindowLongPtrA(window, GWLP_USERDATA) as *mut Sender<Message>;
-                let sender = &*ptr;
-                sender
-                    .send(Message {
-                        message,
-                        // w_param: wparam as u32,
-                        l_param: lparam as u32,
-                    })
-                    .unwrap();
-                1
+                Ok(None) => continue,
+                Err(e) => panic!("{:?}", e),
             }
         }
     }

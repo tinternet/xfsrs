@@ -1,20 +1,25 @@
+use std::ffi::CStr;
+
 use winapi::ctypes::c_char;
 use winapi::shared::minwindef::{DWORD, LPVOID, WORD};
 use winapi::shared::ntdef::{ULONG, USHORT};
 use winapi::um::minwinbase::SYSTEMTIME;
-use winapi::um::winnt::{HANDLE, HRESULT};
+use winapi::um::winnt::{HANDLE, HRESULT, LPSTR};
 
 pub use constants::*;
 pub use errors::*;
-pub use util::*;
+pub use module::*;
 pub use version::*;
 pub use window::*;
 
-pub mod conf;
 mod constants;
 mod errors;
-pub mod supp;
-mod util;
+pub mod heap;
+mod macros;
+mod module;
+pub mod registry;
+pub mod spi;
+pub mod timer;
 mod version;
 mod window;
 
@@ -39,7 +44,7 @@ pub struct WFSVERSION {
 }
 
 #[allow(non_snake_case)]
-#[repr(C)]
+#[repr(C, packed)]
 pub union U {
     pub dwCommandCode: DWORD,
     pub dwEventID: DWORD,
@@ -54,4 +59,10 @@ pub struct WFSRESULT {
     pub hResult: HRESULT,
     pub u: U,
     pub lpBuffer: LPVOID,
+}
+
+pub fn output_trace_data(lpsz_data: LPSTR) -> HRESULT {
+    let data = unsafe { CStr::from_ptr(lpsz_data).to_str() };
+    tracing::trace!("XFS TRACE --- {}", xfs_unwrap!(data));
+    WFS_SUCCESS
 }

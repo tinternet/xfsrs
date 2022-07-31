@@ -6,14 +6,14 @@ use winapi::{
     },
     um::winnt::LPSTR,
 };
-use xfslib::*;
+use xfslib::{module_init, registry::*};
 
 #[allow(non_snake_case)]
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMCloseKey(h_key: HKEY) -> HRESULT {
-    xfslib::conf::close_key(h_key)
+    close_key(h_key)
 }
 
 #[allow(non_snake_case)]
@@ -21,7 +21,7 @@ pub unsafe extern "stdcall" fn WFMCloseKey(h_key: HKEY) -> HRESULT {
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMCreateKey(hKey: HKEY, lpszSubKey: LPSTR, phkResult: PHKEY, lpdwDisposition: LPDWORD) -> HRESULT {
-    xfslib::conf::create_key(hKey, lpszSubKey, phkResult, lpdwDisposition)
+    create_key(hKey, lpszSubKey, phkResult, lpdwDisposition)
 }
 
 #[allow(non_snake_case)]
@@ -29,7 +29,7 @@ pub unsafe extern "stdcall" fn WFMCreateKey(hKey: HKEY, lpszSubKey: LPSTR, phkRe
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMDeleteKey(hKey: HKEY, lpszSubKey: LPSTR) -> HRESULT {
-    xfslib::conf::delete_key(hKey, lpszSubKey)
+    delete_key(hKey, lpszSubKey)
 }
 
 #[allow(non_snake_case)]
@@ -37,7 +37,7 @@ pub unsafe extern "stdcall" fn WFMDeleteKey(hKey: HKEY, lpszSubKey: LPSTR) -> HR
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMDeleteValue(hKey: HKEY, lpszValue: LPSTR) -> HRESULT {
-    xfslib::conf::delete_value(hKey, lpszValue)
+    delete_value(hKey, lpszValue)
 }
 
 #[allow(non_snake_case)]
@@ -45,7 +45,7 @@ pub unsafe extern "stdcall" fn WFMDeleteValue(hKey: HKEY, lpszValue: LPSTR) -> H
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMEnumKey(hKey: HKEY, iSubKey: DWORD, lpszName: LPSTR, lpcchName: LPDWORD, lpftLastWrite: PFILETIME) -> HRESULT {
-    xfslib::conf::enum_key(hKey, iSubKey, lpszName, lpcchName, lpftLastWrite)
+    enum_key(hKey, iSubKey, lpszName, lpcchName, lpftLastWrite)
 }
 
 #[allow(non_snake_case)]
@@ -53,7 +53,7 @@ pub unsafe extern "stdcall" fn WFMEnumKey(hKey: HKEY, iSubKey: DWORD, lpszName: 
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMEnumValue(hKey: HKEY, iValue: DWORD, lpszValue: LPSTR, lpcchValue: LPDWORD, lpszData: LPSTR, lpcchData: LPDWORD) -> HRESULT {
-    xfslib::conf::enum_value(hKey, iValue, lpszValue, lpcchValue, lpszData, lpcchData)
+    enum_value(hKey, iValue, lpszValue, lpcchValue, lpszData, lpcchData)
 }
 
 #[allow(non_snake_case)]
@@ -61,7 +61,7 @@ pub unsafe extern "stdcall" fn WFMEnumValue(hKey: HKEY, iValue: DWORD, lpszValue
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMOpenKey(hKey: HKEY, lpszSubKey: LPSTR, phkResult: PHKEY) -> HRESULT {
-    xfslib::conf::open_key(hKey, lpszSubKey, phkResult)
+    open_key(hKey, lpszSubKey, phkResult)
 }
 
 #[allow(non_snake_case)]
@@ -69,7 +69,7 @@ pub unsafe extern "stdcall" fn WFMOpenKey(hKey: HKEY, lpszSubKey: LPSTR, phkResu
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMQueryValue(hKey: HKEY, lpszValueName: LPSTR, lpszData: LPSTR, lpcchData: LPDWORD) -> HRESULT {
-    xfslib::conf::query_value(hKey, lpszValueName, lpszData, lpcchData)
+    query_value(hKey, lpszValueName, lpszData, lpcchData)
 }
 
 #[allow(non_snake_case)]
@@ -77,7 +77,7 @@ pub unsafe extern "stdcall" fn WFMQueryValue(hKey: HKEY, lpszValueName: LPSTR, l
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMSetValue(hKey: HKEY, lpszValueName: LPSTR, lpszData: LPSTR, cchData: DWORD) -> HRESULT {
-    xfslib::conf::set_value(hKey, lpszValueName, lpszData, cchData)
+    set_value(hKey, lpszValueName, lpszData, cchData)
 }
 
 #[allow(non_snake_case)]

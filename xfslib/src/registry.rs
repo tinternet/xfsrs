@@ -3,8 +3,6 @@ use std::{
     ptr,
 };
 
-use crate::*;
-use log::error;
 use winapi::{
     shared::{
         minwindef::{DWORD, HKEY, LPDWORD, PFILETIME, PHKEY},
@@ -18,6 +16,8 @@ use winapi::{
         },
     },
 };
+
+use crate::*;
 
 pub unsafe fn close_key(h_key: HKEY) -> HRESULT {
     match RegCloseKey(h_key) as u32 {
@@ -159,7 +159,7 @@ pub unsafe fn query_value(h_key: HKEY, lpsz_value_name: LPSTR, lpsz_data: LPSTR,
         xfs_reject!(WFS_ERR_INVALID_POINTER);
     }
 
-    let result = match RegGetValueA(h_key, std::ptr::null_mut(), lpsz_value_name, RRF_RT_ANY, std::ptr::null_mut(), lpsz_data as *mut _, lpcch_data) as u32 {
+    let result = match RegGetValueA(h_key, ptr::null_mut(), lpsz_value_name, RRF_RT_ANY, ptr::null_mut(), lpsz_data as *mut _, lpcch_data) as u32 {
         ERROR_SUCCESS => WFS_SUCCESS,
         ERROR_FILE_NOT_FOUND => WFS_ERR_CFG_INVALID_NAME,
         ERROR_PATH_NOT_FOUND => WFS_ERR_CFG_INVALID_HKEY,
@@ -186,7 +186,7 @@ pub unsafe fn set_value(h_key: HKEY, lpsz_value_name: LPSTR, lpsz_data: LPSTR, c
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::registry::*;
     use winapi::shared::minwindef::MAX_PATH;
 
     #[test]

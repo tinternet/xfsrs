@@ -13,32 +13,40 @@ use xfslib::*;
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFMAllocateBuffer(ul_size: ULONG, ul_flags: ULONG, lppv_data: *mut LPVOID) -> HRESULT {
-    xfslib::supp::allocate_buffer(ul_size, ul_flags, lppv_data)
+pub extern "stdcall" fn WFMAllocateBuffer(size: ULONG, flags: ULONG, data: *mut LPVOID) -> HRESULT {
+    heap::allocate_buffer(size, flags, data)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFMAllocateMore(ulSize: ULONG, lpvOriginal: LPVOID, lppvData: *mut LPVOID) -> HRESULT {
-    xfslib::supp::allocate_more(ulSize, lpvOriginal, lppvData)
+pub extern "stdcall" fn WFMAllocateMore(size: ULONG, original: LPVOID, data: *mut LPVOID) -> HRESULT {
+    heap::allocate_more(size, original, data)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFMFreeBuffer(lpvData: LPVOID) -> HRESULT {
-    xfslib::supp::free_buffer(lpvData)
+pub extern "stdcall" fn WFMFreeBuffer(data: LPVOID) -> HRESULT {
+    heap::free_buffer(data)
 }
 
 #[allow(non_snake_case)]
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
-    xfslib::supp::kill_timer(wTimerID)
+pub extern "stdcall" fn WFMSetTimer(wnd: HWND, context: LPVOID, dw_time_val: DWORD, lpw_timer_id: LPWORD) -> HRESULT {
+    timer::set_timer(wnd, context, dw_time_val, lpw_timer_id)
+}
+
+#[allow(non_snake_case)]
+#[no_mangle]
+#[logfn(TRACE)]
+#[logfn_inputs(TRACE)]
+pub extern "stdcall" fn WFMKillTimer(w_timer_id: WORD) -> HRESULT {
+    timer::kill_timer(w_timer_id)
 }
 
 #[allow(non_snake_case)]
@@ -46,15 +54,7 @@ pub extern "stdcall" fn WFMKillTimer(wTimerID: WORD) -> HRESULT {
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMOutputTraceData(lpszData: LPSTR) -> HRESULT {
-    xfslib::supp::output_trace_data(lpszData)
-}
-
-#[allow(non_snake_case)]
-#[no_mangle]
-#[logfn(TRACE)]
-#[logfn_inputs(TRACE)]
-pub extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTimeVal: DWORD, lpwTimerID: LPWORD) -> HRESULT {
-    xfslib::supp::set_timer(hWnd, lpContext, dwTimeVal, lpwTimerID)
+    output_trace_data(lpszData)
 }
 
 #[allow(non_snake_case)]
@@ -62,7 +62,7 @@ pub extern "stdcall" fn WFMSetTimer(hWnd: HWND, lpContext: LPVOID, dwTimeVal: DW
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub extern "stdcall" fn WFMSetTraceLevel(hService: HSERVICE, dwTraceLevel: DWORD) -> HRESULT {
-    xfslib::supp::set_trace_level(hService, dwTraceLevel)
+    WFS_SUCCESS
 }
 
 #[allow(non_snake_case)]

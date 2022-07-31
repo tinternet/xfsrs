@@ -12,6 +12,7 @@ lazy_static = "1.4.0"
 log = "0.4"
 log4rs = "1.1"
 log-derive = "*"
+tracing = "*"
 
 [lib]
 crate-type=["cdylib"]
