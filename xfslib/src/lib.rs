@@ -10,35 +10,13 @@ pub use util::*;
 pub use version::*;
 pub use window::*;
 
+pub mod conf;
 mod constants;
 mod errors;
+pub mod supp;
 mod util;
 mod version;
 mod window;
-
-/// Unwraps the result of a WFS call and returns the HRESULT on error.
-/// The error is logged to the log file.
-#[macro_export]
-macro_rules! xfs_unwrap {
-    ($l:expr) => {
-        match $l {
-            Ok(result) => result,
-            Err(error) => {
-                error!("{:?}", error);
-                return WFS_ERR_INTERNAL_ERROR;
-            }
-        }
-    };
-}
-
-/// Rejects with specific error and logs error.
-#[macro_export]
-macro_rules! xfs_reject {
-    ($l:expr) => {{
-        error!(stringify!($l));
-        return $l;
-    }};
-}
 
 pub type HSERVICE = USHORT;
 pub type LPHSERVICE = *mut HSERVICE;

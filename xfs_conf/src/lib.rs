@@ -1,22 +1,10 @@
-use std::{
-    ffi::{CStr, CString},
-    ptr,
-};
-
-use log::error;
 use log_derive::{logfn, logfn_inputs};
 use winapi::{
     shared::{
         minwindef::{DWORD, HINSTANCE, HKEY, LPDWORD, LPVOID, PFILETIME, PHKEY},
-        winerror::{ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE, ERROR_KEY_HAS_CHILDREN, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HRESULT},
+        winerror::HRESULT,
     },
-    um::{
-        winnt::{KEY_ALL_ACCESS, LPSTR, REG_CREATED_NEW_KEY, REG_OPENED_EXISTING_KEY, REG_OPTION_NON_VOLATILE, REG_SZ},
-        winreg::{
-            RegCloseKey, RegCreateKeyExA, RegDeleteKeyExA, RegDeleteValueA, RegEnumKeyExA, RegEnumValueA, RegGetValueA, RegOpenKeyA, RegSetValueExA, HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE, HKEY_USERS,
-            RRF_RT_ANY,
-        },
-    },
+    um::winnt::LPSTR,
 };
 use xfslib::*;
 
@@ -24,13 +12,8 @@ use xfslib::*;
 #[no_mangle]
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
-pub unsafe extern "stdcall" fn WFMCloseKey(hKey: HKEY) -> HRESULT {
-    match RegCloseKey(hKey) as u32 {
-        ERROR_SUCCESS => WFS_SUCCESS,
-        ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
-        ERROR_INVALID_HANDLE => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
-        _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
-    }
+pub unsafe extern "stdcall" fn WFMCloseKey(h_key: HKEY) -> HRESULT {
+    xfslib::conf::close_key(h_key)
 }
 
 #[allow(non_snake_case)]
@@ -38,46 +21,7 @@ pub unsafe extern "stdcall" fn WFMCloseKey(hKey: HKEY) -> HRESULT {
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMCreateKey(hKey: HKEY, lpszSubKey: LPSTR, phkResult: PHKEY, lpdwDisposition: LPDWORD) -> HRESULT {
-    if lpszSubKey.is_null() || lpdwDisposition.is_null() {
-        xfs_reject!(WFS_ERR_INVALID_POINTER);
-    }
-
-    let dw_disposition: LPDWORD = 0 as LPDWORD;
-
-    let (sub_key, h_key) = match hKey {
-        WFS_CFG_HKEY_XFS_ROOT => ("WOSA/XFS_ROOT\\", HKEY_CLASSES_ROOT),
-        WFS_CFG_HKEY_MACHINE_XFS_ROOT => ("SOFTWARE\\XFS\\", HKEY_LOCAL_MACHINE),
-        WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT => (".DEFAULT\\XFS\\", HKEY_USERS),
-        _ => ("", hKey),
-    };
-
-    let sub_key = format!("{}{}", sub_key, xfs_unwrap!(CStr::from_ptr(lpszSubKey).to_str()));
-    let sub_key_cstring = xfs_unwrap!(CString::new(sub_key));
-
-    match RegCreateKeyExA(
-        h_key,
-        sub_key_cstring.as_ptr(),
-        0,
-        ptr::null_mut(),
-        REG_OPTION_NON_VOLATILE,
-        KEY_ALL_ACCESS,
-        ptr::null_mut(),
-        phkResult,
-        dw_disposition,
-    ) as u32
-    {
-        ERROR_SUCCESS => {
-            lpdwDisposition.write(match *dw_disposition {
-                REG_CREATED_NEW_KEY => WFS_CFG_CREATED_NEW_KEY,
-                REG_OPENED_EXISTING_KEY => WFS_CFG_OPENED_EXISTING_KEY,
-                _ => 0,
-            });
-            WFS_SUCCESS
-        }
-        ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
-        ERROR_PATH_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_SUBKEY),
-        _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
-    }
+    xfslib::conf::create_key(hKey, lpszSubKey, phkResult, lpdwDisposition)
 }
 
 #[allow(non_snake_case)]
@@ -85,17 +29,7 @@ pub unsafe extern "stdcall" fn WFMCreateKey(hKey: HKEY, lpszSubKey: LPSTR, phkRe
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMDeleteKey(hKey: HKEY, lpszSubKey: LPSTR) -> HRESULT {
-    if lpszSubKey.is_null() {
-        return WFS_ERR_INVALID_POINTER;
-    }
-
-    match RegDeleteKeyExA(hKey, lpszSubKey, 0, 0) as u32 {
-        ERROR_SUCCESS => WFS_SUCCESS,
-        ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
-        ERROR_KEY_HAS_CHILDREN => xfs_reject!(WFS_ERR_CFG_KEY_NOT_EMPTY),
-        ERROR_PATH_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_SUBKEY),
-        _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
-    }
+    xfslib::conf::delete_key(hKey, lpszSubKey)
 }
 
 #[allow(non_snake_case)]
@@ -103,16 +37,7 @@ pub unsafe extern "stdcall" fn WFMDeleteKey(hKey: HKEY, lpszSubKey: LPSTR) -> HR
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMDeleteValue(hKey: HKEY, lpszValue: LPSTR) -> HRESULT {
-    if lpszValue.is_null() {
-        xfs_reject!(WFS_ERR_INVALID_POINTER);
-    }
-
-    match RegDeleteValueA(hKey, lpszValue) as u32 {
-        ERROR_SUCCESS => WFS_SUCCESS,
-        ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
-        ERROR_PATH_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_VALUE),
-        _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
-    }
+    xfslib::conf::delete_value(hKey, lpszValue)
 }
 
 #[allow(non_snake_case)]
@@ -120,17 +45,7 @@ pub unsafe extern "stdcall" fn WFMDeleteValue(hKey: HKEY, lpszValue: LPSTR) -> H
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMEnumKey(hKey: HKEY, iSubKey: DWORD, lpszName: LPSTR, lpcchName: LPDWORD, lpftLastWrite: PFILETIME) -> HRESULT {
-    if lpszName.is_null() || lpcchName.is_null() {
-        xfs_reject!(WFS_ERR_INVALID_POINTER);
-    }
-
-    match RegEnumKeyExA(hKey, iSubKey, lpszName, lpcchName, ptr::null_mut(), ptr::null_mut(), ptr::null_mut(), lpftLastWrite) as u32 {
-        ERROR_SUCCESS => WFS_SUCCESS,
-        ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
-        ERROR_MORE_DATA => xfs_reject!(WFS_ERR_CFG_NAME_TOO_LONG),
-        ERROR_NO_MORE_ITEMS => xfs_reject!(WFS_ERR_CFG_NO_MORE_ITEMS),
-        _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
-    }
+    xfslib::conf::enum_key(hKey, iSubKey, lpszName, lpcchName, lpftLastWrite)
 }
 
 #[allow(non_snake_case)]
@@ -138,23 +53,7 @@ pub unsafe extern "stdcall" fn WFMEnumKey(hKey: HKEY, iSubKey: DWORD, lpszName: 
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMEnumValue(hKey: HKEY, iValue: DWORD, lpszValue: LPSTR, lpcchValue: LPDWORD, lpszData: LPSTR, lpcchData: LPDWORD) -> HRESULT {
-    if lpszValue.is_null() || lpcchValue.is_null() || lpszData.is_null() || lpcchData.is_null() {
-        xfs_reject!(WFS_ERR_INVALID_POINTER);
-    }
-
-    let result = match RegEnumValueA(hKey, iValue, lpszValue, lpcchValue, ptr::null_mut(), ptr::null_mut(), lpszData as *mut _, lpcchData) as u32 {
-        ERROR_SUCCESS => WFS_SUCCESS,
-        ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
-        ERROR_PATH_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_SUBKEY),
-        ERROR_MORE_DATA => xfs_reject!(WFS_ERR_CFG_VALUE_TOO_LONG),
-        ERROR_NO_MORE_ITEMS => xfs_reject!(WFS_ERR_CFG_NO_MORE_ITEMS),
-        _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
-    };
-
-    // Diebold xfs simply decreases by 1 even if there was an error
-    *lpcchData = *lpcchData - 1;
-
-    result
+    xfslib::conf::enum_value(hKey, iValue, lpszValue, lpcchValue, lpszData, lpcchData)
 }
 
 #[allow(non_snake_case)]
@@ -162,25 +61,7 @@ pub unsafe extern "stdcall" fn WFMEnumValue(hKey: HKEY, iValue: DWORD, lpszValue
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMOpenKey(hKey: HKEY, lpszSubKey: LPSTR, phkResult: PHKEY) -> HRESULT {
-    if lpszSubKey.is_null() {
-        xfs_reject!(WFS_ERR_INVALID_POINTER);
-    }
-    let (sub_key, h_key) = match hKey {
-        WFS_CFG_HKEY_XFS_ROOT => ("WOSA/XFS_ROOT\\", HKEY_CLASSES_ROOT),
-        WFS_CFG_HKEY_MACHINE_XFS_ROOT => ("SOFTWARE\\XFS\\", HKEY_LOCAL_MACHINE),
-        WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT => (".DEFAULT\\XFS\\", HKEY_USERS),
-        _ => ("", hKey),
-    };
-
-    let sub_key = format!("{}{}", sub_key, xfs_unwrap!(CStr::from_ptr(lpszSubKey).to_str()));
-    let sub_key_cstring = xfs_unwrap!(CString::new(sub_key));
-
-    match RegOpenKeyA(h_key, sub_key_cstring.as_ptr(), phkResult) as DWORD {
-        ERROR_SUCCESS => WFS_SUCCESS,
-        ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
-        ERROR_PATH_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_SUBKEY),
-        _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
-    }
+    xfslib::conf::open_key(hKey, lpszSubKey, phkResult)
 }
 
 #[allow(non_snake_case)]
@@ -188,21 +69,7 @@ pub unsafe extern "stdcall" fn WFMOpenKey(hKey: HKEY, lpszSubKey: LPSTR, phkResu
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMQueryValue(hKey: HKEY, lpszValueName: LPSTR, lpszData: LPSTR, lpcchData: LPDWORD) -> HRESULT {
-    if lpszValueName.is_null() || lpcchData.is_null() || ((*lpcchData > 0) && lpszData.is_null()) {
-        xfs_reject!(WFS_ERR_INVALID_POINTER);
-    }
-
-    let result = match RegGetValueA(hKey, std::ptr::null_mut(), lpszValueName, RRF_RT_ANY, std::ptr::null_mut(), lpszData as *mut _, lpcchData) as u32 {
-        ERROR_SUCCESS => WFS_SUCCESS,
-        ERROR_FILE_NOT_FOUND => WFS_ERR_CFG_INVALID_NAME,
-        ERROR_PATH_NOT_FOUND => WFS_ERR_CFG_INVALID_HKEY,
-        ERROR_MORE_DATA => WFS_ERR_CFG_VALUE_TOO_LONG,
-        _ => WFS_ERR_INTERNAL_ERROR,
-    };
-
-    // Diebold xfs simply decreases by 1 even if there was an error
-    *lpcchData = *lpcchData - 1;
-    result
+    xfslib::conf::query_value(hKey, lpszValueName, lpszData, lpcchData)
 }
 
 #[allow(non_snake_case)]
@@ -210,15 +77,7 @@ pub unsafe extern "stdcall" fn WFMQueryValue(hKey: HKEY, lpszValueName: LPSTR, l
 #[logfn(TRACE)]
 #[logfn_inputs(TRACE)]
 pub unsafe extern "stdcall" fn WFMSetValue(hKey: HKEY, lpszValueName: LPSTR, lpszData: LPSTR, cchData: DWORD) -> HRESULT {
-    if lpszValueName.is_null() || lpszData.is_null() {
-        xfs_reject!(WFS_ERR_INVALID_POINTER);
-    }
-
-    match RegSetValueExA(hKey, lpszValueName, 0, REG_SZ, lpszData as *mut _, cchData) as u32 {
-        ERROR_SUCCESS => WFS_SUCCESS,
-        ERROR_FILE_NOT_FOUND => xfs_reject!(WFS_ERR_CFG_INVALID_HKEY),
-        _ => xfs_reject!(WFS_ERR_INTERNAL_ERROR),
-    }
+    xfslib::conf::set_value(hKey, lpszValueName, lpszData, cchData)
 }
 
 #[allow(non_snake_case)]
@@ -226,86 +85,4 @@ pub unsafe extern "stdcall" fn WFMSetValue(hKey: HKEY, lpszValueName: LPSTR, lps
 pub extern "stdcall" fn DllMain(hinst_dll: HINSTANCE, fdw_reason: DWORD, _: LPVOID) -> bool {
     module_init(hinst_dll, fdw_reason);
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use winapi::shared::minwindef::MAX_PATH;
-
-    #[test]
-    fn test_open_key() {
-        let mut key: HKEY = ptr::null_mut();
-        let path = CString::new("LOGICAL_SERVICES\\cwd").unwrap();
-        let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
-        assert_eq!(result, WFS_SUCCESS);
-
-        let result = unsafe { WFMCloseKey(key) };
-        assert_eq!(result, WFS_SUCCESS);
-    }
-
-    #[test]
-    fn test_open_key_fail() {
-        let mut key: HKEY = ptr::null_mut();
-        let path = CString::new("LOGICAL_SERVICES\\gfdggfshfgsdfgs").unwrap();
-        let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
-        assert_eq!(result, WFS_ERR_CFG_INVALID_HKEY);
-
-        let result = unsafe { WFMCloseKey(key) };
-        assert_eq!(result, WFS_ERR_CFG_INVALID_HKEY);
-    }
-
-    #[test]
-    fn test_query_value() {
-        let mut lgl_prov_path = [0u8; MAX_PATH];
-        let mut key: HKEY = ptr::null_mut();
-        let path = CString::new("LOGICAL_SERVICES\\cwd").unwrap();
-
-        let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
-        assert_eq!(result, WFS_SUCCESS);
-
-        let name = CString::new("provider").unwrap();
-        let len = &mut (MAX_PATH as u32);
-        let result = unsafe { WFMQueryValue(key, name.as_ptr() as *mut _, lgl_prov_path.as_mut_ptr() as *mut _, len) };
-        assert_eq!(result, WFS_SUCCESS);
-        assert_eq!(&lgl_prov_path[..*len as usize], b"serviceprovider");
-
-        let result = unsafe { WFMCloseKey(key) };
-        assert_eq!(result, WFS_SUCCESS);
-    }
-
-    #[test]
-    fn test_query_value_fail() {
-        let mut lgl_prov_path = [0u8; MAX_PATH];
-        let mut key: HKEY = ptr::null_mut();
-        let path = CString::new("LOGICAL_SERVICES\\cwd").unwrap();
-
-        let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
-        assert_eq!(result, WFS_SUCCESS);
-
-        let name = CString::new("54gfdgfdgdfgsgsfg").unwrap();
-        let len = &mut (MAX_PATH as u32);
-        let result = unsafe { WFMQueryValue(key, name.as_ptr() as *mut _, lgl_prov_path.as_mut_ptr() as *mut _, len) };
-        assert_eq!(result, WFS_ERR_CFG_INVALID_NAME);
-
-        let result = unsafe { WFMCloseKey(key) };
-        assert_eq!(result, WFS_SUCCESS);
-    }
-
-    // #[test]
-    // fn test_create_delete() {
-    //     let mut key: HKEY = ptr::null_mut();
-    //     let path = CString::new("LOGICAL_SERVICES\\cwd").unwrap();
-    //     let result = unsafe { WFMOpenKey(WFS_CFG_HKEY_USER_DEFAULT_XFS_ROOT, path.as_ptr() as *mut i8, &mut key) };
-    //     assert_eq!(result, WFS_SUCCESS);
-
-    //     let name = CString::new("some_name").unwrap();
-    //     let mut new: HKEY = ptr::null_mut();
-    //     let result = unsafe { WFMCreateKey(key, name.as_ptr() as *mut i8, &mut new, ptr::null_mut()) };
-    //     assert_eq!(result, WFS_SUCCESS);
-    //     assert_ne!(new, ptr::null_mut());
-
-    //     let result = unsafe { WFMCloseKey(key) };
-    //     assert_eq!(result, WFS_SUCCESS);
-    // }
 }
